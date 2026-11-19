@@ -65,7 +65,26 @@ jobs:
         run: |
           ./node_modules/.bin/expo prebuild --platform android --clean --no-install
           cd android
-          ./gradlew --no-daemon :app:assembleRelease -x lintVitalAnalyzeRelease -x lintVitalRelease
+          # Both URLs serve Maven Central; the default endpoint can return false 404s on runners.
+          cat > "$RUNNER_TEMP/prism-maven.gradle" <<'GRADLE'
+          import org.gradle.api.artifacts.repositories.MavenArtifactRepository
+          def central = { repositories ->
+            repositories.all { repository ->
+              if (repository instanceof MavenArtifactRepository && repository.url?.host == 'repo.maven.apache.org') {
+                repository.url = uri('https://maven-central.storage-download.googleapis.com/maven2')
+              }
+            }
+          }
+          gradle.beforeSettings { settings ->
+            central(settings.pluginManagement.repositories)
+            central(settings.dependencyResolutionManagement.repositories)
+          }
+          gradle.beforeProject { project ->
+            central(project.buildscript.repositories)
+            central(project.repositories)
+          }
+          GRADLE
+          ./gradlew --init-script "$RUNNER_TEMP/prism-maven.gradle" --no-daemon :app:assembleRelease -x lintVitalAnalyzeRelease -x lintVitalRelease
           cp app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/t3chat-unsigned.apk"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: steps.source.outputs.upstream_tag != ''
