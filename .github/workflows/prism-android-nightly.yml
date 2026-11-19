@@ -21,9 +21,11 @@ jobs:
       upstream_tag: ${{ steps.source.outputs.upstream_tag }}
       upstream_sha: ${{ steps.source.outputs.upstream_sha }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          persist-credentials: false
+      - name: Check out the fork
+        run: |
+          git init .
+          git fetch --no-tags --depth=1 "https://github.com/$GITHUB_REPOSITORY.git" "$GITHUB_SHA"
+          git switch --detach FETCH_HEAD
       - name: Apply the mobile patch to the current upstream nightly
         id: source
         env:
