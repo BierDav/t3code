@@ -21,11 +21,6 @@ jobs:
       upstream_tag: ${{ steps.source.outputs.upstream_tag }}
       upstream_sha: ${{ steps.source.outputs.upstream_sha }}
     steps:
-      - name: Check out the fork
-        run: |
-          git init .
-          git fetch --no-tags --depth=1 "https://github.com/$GITHUB_REPOSITORY.git" "$GITHUB_SHA"
-          git switch --detach FETCH_HEAD
       - name: Apply the mobile patch to the current upstream nightly
         id: source
         env:
@@ -38,13 +33,13 @@ jobs:
           if gh release view --repo "$GITHUB_REPOSITORY" --json body --jq .body 2>/dev/null | grep -Fxq "Upstream: $tag ($GITHUB_SHA)"; then
             exit 0
           fi
-          git fetch --no-tags --depth=1 https://github.com/pingdotgg/t3code.git "$PATCH_BASE"
-          git diff --binary "$PATCH_BASE" HEAD -- apps/mobile > "$RUNNER_TEMP/prism-mobile.patch"
-          test -s "$RUNNER_TEMP/prism-mobile.patch"
+          gh api -H 'Accept: application/vnd.github.diff' \
+            "repos/$GITHUB_REPOSITORY/compare/$PATCH_BASE...$GITHUB_SHA" > "$RUNNER_TEMP/prism-mobile.patch"
+          git init .
           git fetch --no-tags --depth=1 https://github.com/pingdotgg/t3code.git "refs/tags/$tag"
           upstream_sha=$(git rev-parse 'FETCH_HEAD^{commit}')
           git switch --detach "$upstream_sha"
-          git apply --3way "$RUNNER_TEMP/prism-mobile.patch"
+          git apply --include='apps/mobile/**' "$RUNNER_TEMP/prism-mobile.patch"
           printf 'upstream_tag=%s\nupstream_sha=%s\n' "$tag" "$upstream_sha" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/setup-ci-deps
         if: steps.source.outputs.upstream_tag != ''
