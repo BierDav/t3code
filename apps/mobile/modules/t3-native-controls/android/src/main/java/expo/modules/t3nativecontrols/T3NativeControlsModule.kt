@@ -3,6 +3,7 @@ package expo.modules.t3nativecontrols
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.content.RestrictionsManager
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -17,9 +18,13 @@ import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import java.io.File
 import java.net.URI
+import java.security.MessageDigest
 
 class T3NativeControlsModule : Module() {
   private var filePreviewPromise: Promise? = null
+
+  private fun pairingFingerprint(url: String): String = MessageDigest.getInstance("SHA-256")
+    .digest(url.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
 
   @Suppress("TooGenericExceptionCaught") // Clear the pending promise before rethrowing.
   override fun definition() = ModuleDefinition {
@@ -37,6 +42,22 @@ class T3NativeControlsModule : Module() {
     Function("is24HourFormat") {
       val context = appContext.reactContext ?: error("The app is not active.")
       DateFormat.is24HourFormat(context)
+    }
+
+    AsyncFunction("getPrismPairingUrls") {
+      val context = appContext.reactContext ?: return@AsyncFunction emptyList<String>()
+      if (context.packageName != "at.quickme.t3chat") return@AsyncFunction emptyList<String>()
+      val restrictions = context.getSystemService(RestrictionsManager::class.java).applicationRestrictions
+      val prefs = context.getSharedPreferences("prism-pairing", Context.MODE_PRIVATE)
+      restrictions.getStringArray("prism_pairing_urls").orEmpty().distinct()
+        .filterNot { prefs.getBoolean(pairingFingerprint(it), false) }
+    }
+
+    AsyncFunction("markPrismPairingComplete") { url: String ->
+      val context = appContext.reactContext ?: return@AsyncFunction
+      if (context.packageName != "at.quickme.t3chat") return@AsyncFunction
+      context.getSharedPreferences("prism-pairing", Context.MODE_PRIVATE)
+        .edit().putBoolean(pairingFingerprint(url), true).apply()
     }
 
     AsyncFunction("generateDpopKey") { T3DpopKeys.generate() }

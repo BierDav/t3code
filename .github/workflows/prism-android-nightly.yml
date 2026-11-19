@@ -1,0 +1,124 @@
+name: Prism Android nightly
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 5 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prism-android-nightly
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'BierDav/t3code' && github.ref_name == 'prism-nightly'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    outputs:
+      upstream_tag: ${{ steps.source.outputs.upstream_tag }}
+      upstream_sha: ${{ steps.source.outputs.upstream_sha }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Apply the mobile patch to the current upstream nightly
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PATCH_BASE: ff9efe89f6e793fed459d3d9c42f68450de78e95
+        run: |
+          set -euo pipefail
+          tag=$(gh api 'repos/pingdotgg/t3code/releases?per_page=30' --jq '[.[] | select(.prerelease and (.tag_name | contains("-nightly.")) and any(.assets[]; .name | endswith(".apk")))][0].tag_name // empty')
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9]+\.[0-9]+$ ]]
+          if gh release view --repo "$GITHUB_REPOSITORY" --json body --jq .body 2>/dev/null | grep -Fxq "Upstream: $tag ($GITHUB_SHA)"; then
+            exit 0
+          fi
+          git fetch --no-tags --depth=1 https://github.com/pingdotgg/t3code.git "$PATCH_BASE"
+          git diff --binary "$PATCH_BASE" HEAD -- apps/mobile > "$RUNNER_TEMP/prism-mobile.patch"
+          test -s "$RUNNER_TEMP/prism-mobile.patch"
+          git fetch --no-tags --depth=1 https://github.com/pingdotgg/t3code.git "refs/tags/$tag"
+          upstream_sha=$(git rev-parse 'FETCH_HEAD^{commit}')
+          git switch --detach "$upstream_sha"
+          git apply --3way "$RUNNER_TEMP/prism-mobile.patch"
+          printf 'upstream_tag=%s\nupstream_sha=%s\n' "$tag" "$upstream_sha" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/setup-ci-deps
+        if: steps.source.outputs.upstream_tag != ''
+        with:
+          install-args: --filter=@t3tools/mobile... --filter=@t3tools/scripts...
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        if: steps.source.outputs.upstream_tag != ''
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Build an ARM64 release APK
+        if: steps.source.outputs.upstream_tag != ''
+        working-directory: apps/mobile
+        env:
+          APP_VARIANT: preview
+          CI: "1"
+          EXPO_NO_DOTENV: "1"
+          EXPO_NO_GIT_STATUS: "1"
+          MOBILE_VERSION_POLICY: appVersion
+          NODE_OPTIONS: --max-old-space-size=4096
+          ORG_GRADLE_PROJECT_reactNativeArchitectures: arm64-v8a
+          T3CODE_PRISM_ANDROID_VERSION_CODE: ${{ github.run_number }}
+        run: |
+          ./node_modules/.bin/expo prebuild --platform android --clean --no-install
+          cd android
+          ./gradlew --no-daemon :app:assembleRelease -x lintVitalAnalyzeRelease -x lintVitalRelease
+          cp app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/t3chat-unsigned.apk"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.source.outputs.upstream_tag != ''
+        with:
+          name: t3chat-unsigned
+          path: ${{ runner.temp }}/t3chat-unsigned.apk
+          retention-days: 1
+          if-no-files-found: error
+          compression-level: 0
+
+  sign-and-publish:
+    needs: build
+    if: needs.build.outputs.upstream_tag != ''
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: prism-android-signing
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: t3chat-unsigned
+          path: ${{ runner.temp }}
+      - name: Sign and verify the APK
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          EXPECTED_SIGNER: ${{ vars.ANDROID_SIGNER_SHA256 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          : "${KEYSTORE_B64:?}" "${KEYSTORE_PASSWORD:?}" "${EXPECTED_SIGNER:?}"
+          keystore="$RUNNER_TEMP/prism-t3chat.p12"
+          trap 'rm -f "$keystore"' EXIT
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$keystore"
+          sdkmanager 'build-tools;36.0.0' >/dev/null
+          build_tools="$ANDROID_HOME/build-tools/36.0.0"
+          apk="$RUNNER_TEMP/t3chat.apk"
+          "$build_tools/apksigner" sign --ks "$keystore" --ks-key-alias t3chat --ks-pass env:KEYSTORE_PASSWORD --out "$apk" "$RUNNER_TEMP/t3chat-unsigned.apk"
+          "$build_tools/apksigner" verify --print-certs "$apk" | grep -F "certificate SHA-256 digest: $EXPECTED_SIGNER"
+          "$build_tools/aapt2" dump badging "$apk" | grep -F "package: name='at.quickme.t3chat' versionCode='$GITHUB_RUN_NUMBER'"
+      - name: Publish the signed nightly
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_TAG: ${{ needs.build.outputs.upstream_tag }}
+          UPSTREAM_SHA: ${{ needs.build.outputs.upstream_sha }}
+        run: |
+          set -euo pipefail
+          tag="prism-android-$GITHUB_RUN_NUMBER"
+          printf 'Upstream: %s (%s)\n\nBuilt from %s.\n' "$UPSTREAM_TAG" "$GITHUB_SHA" "$UPSTREAM_SHA" > "$RUNNER_TEMP/release-notes.md"
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest \
+            --title "Prism Android $GITHUB_RUN_NUMBER" --notes-file "$RUNNER_TEMP/release-notes.md" \
+            "$RUNNER_TEMP/t3chat.apk"
