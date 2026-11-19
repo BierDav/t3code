@@ -108,6 +108,13 @@ jobs:
         with:
           name: t3chat-unsigned
           path: ${{ runner.temp }}
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
+        with:
+          packages: build-tools;37.0.0
       - name: Sign and verify the APK
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
@@ -120,8 +127,7 @@ jobs:
           keystore="$RUNNER_TEMP/prism-t3chat.p12"
           trap 'rm -f "$keystore"' EXIT
           printf '%s' "$KEYSTORE_B64" | base64 -d > "$keystore"
-          sdkmanager 'build-tools;36.0.0' >/dev/null
-          build_tools="$ANDROID_HOME/build-tools/36.0.0"
+          build_tools="$ANDROID_HOME/build-tools/37.0.0"
           apk="$RUNNER_TEMP/t3chat.apk"
           "$build_tools/apksigner" sign --ks "$keystore" --ks-key-alias t3chat --ks-pass env:KEYSTORE_PASSWORD --out "$apk" "$RUNNER_TEMP/t3chat-unsigned.apk"
           "$build_tools/apksigner" verify --print-certs "$apk" | grep -F "certificate SHA-256 digest: $EXPECTED_SIGNER"
