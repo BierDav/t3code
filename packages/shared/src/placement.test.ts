@@ -23,8 +23,7 @@ import {
 } from "./placement.ts";
 
 const now = Date.parse("2026-11-21T14:30:00.000Z");
-const hours = (count: number) =>
-  DateTime.formatIso(DateTime.makeUnsafe(now + count * 3_600_000));
+const hours = (count: number) => DateTime.formatIso(DateTime.makeUnsafe(now + count * 3_600_000));
 
 const claude = (model: string): ModelSelection => ({
   instanceId: ProviderInstanceId.make("claudeAgent"),

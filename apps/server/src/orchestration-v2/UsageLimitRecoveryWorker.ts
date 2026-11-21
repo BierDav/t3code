@@ -6,6 +6,7 @@ import {
   type ServerProvider,
   type ServerSettings as ServerSettingsValue,
 } from "@t3tools/contracts";
+import { placementProfileOfTags } from "@t3tools/shared/placement";
 import { availableAccountSelection } from "@t3tools/shared/usageLimits";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -189,7 +190,14 @@ const makeSweep = Effect.gen(function* () {
       const switchCommand = preferences.fallbackToAvailableAccounts
         ? limitSwitchCommand(thread, { providers, settings: preferences, nowMs, limitedUntil })
         : null;
-      if (switchCommand !== null && !attemptedSwitches.has(switchCommand.commandId)) {
+      // Threads in a placement profile are moved by the placement worker.
+      const placed =
+        switchCommand !== null &&
+        Object.keys(preferences.placementProfiles).length > 0 &&
+        placementProfileOfTags(
+          (yield* threads.getThreadShell(thread.id).pipe(Effect.orElseSucceed(() => null)))?.tags,
+        ) !== null;
+      if (switchCommand !== null && !placed && !attemptedSwitches.has(switchCommand.commandId)) {
         attemptedSwitches.add(switchCommand.commandId);
         acted = true;
         const resetMs = Date.parse(thread.usageLimitResetAt ?? "");

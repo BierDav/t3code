@@ -75,7 +75,10 @@ function liveUsed(window: ServerProviderUsageWindow, now: number) {
   return Number.isFinite(reset) && reset <= now ? 0 : window.usedPercent;
 }
 
-function worst(windows: ReadonlyArray<ServerProviderUsageWindow>, now: number): Reading | undefined {
+function worst(
+  windows: ReadonlyArray<ServerProviderUsageWindow>,
+  now: number,
+): Reading | undefined {
   let best: Reading | undefined;
   for (const window of windows) {
     const used = liveUsed(window, now);
@@ -113,7 +116,9 @@ export function placementWindows(
           driver: account.driver,
           usageLimits: account.usageLimits,
         } as ServerProvider,
-        selection.model.includes("/") ? selection.model.split("/").slice(1).join("/") : selection.model,
+        selection.model.includes("/")
+          ? selection.model.split("/").slice(1).join("/")
+          : selection.model,
       );
       return { windows, used: worst(windows, now)?.usedPercent ?? 0 };
     });
@@ -139,7 +144,7 @@ export function usableHours(
       ? hour >= activeHours.start && hour < activeHours.end
       : hour >= activeHours.start || hour < activeHours.end;
   let total = 0;
-  for (let at = now; at < until; ) {
+  for (let at = now; at < until;) {
     const step = Math.min(HOUR - (at % HOUR), until - at);
     if (inside(DateTime.toParts(DateTime.makeZonedUnsafe(at, { timeZone: zone })).hour)) {
       total += step;
@@ -232,8 +237,7 @@ function decideEntry(entry: PlacementEntry, input: PlacementRankInput): Placemen
   if (entry.sessionShareOfWeekly !== undefined && weekly !== undefined && weekly.resetsAt) {
     const needed = (100 - weekly.usedPercent) / entry.sessionShareOfWeekly;
     const left =
-      usableHours(input.now, Date.parse(weekly.resetsAt), input.policy.activeHours) /
-      SESSION_HOURS;
+      usableHours(input.now, Date.parse(weekly.resetsAt), input.policy.activeHours) / SESSION_HOURS;
     weeklySlackSessions = Math.round((left - needed) * 10) / 10;
   }
   const decision = {
@@ -252,7 +256,10 @@ function decideEntry(entry: PlacementEntry, input: PlacementRankInput): Placemen
       reason: `${load.running} running thread${load.running === 1 ? "" : "s"} plus one more would reach about ${percent(predictedSessionPercent)} of the session window before it resets.`,
     };
   }
-  if (weeklySlackSessions !== undefined && weeklySlackSessions <= input.policy.weeklySlackSessions) {
+  if (
+    weeklySlackSessions !== undefined &&
+    weeklySlackSessions <= input.policy.weeklySlackSessions
+  ) {
     return {
       ...decision,
       state: "promoted",

@@ -7,6 +7,7 @@ import {
   type OrchestrationV2Command,
   type ProjectId,
 } from "@t3tools/contracts";
+import { placementMoveTarget, placementProfileOfTags } from "@t3tools/shared/placement";
 import { availableAccountSelection } from "@t3tools/shared/usageLimits";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -15,6 +16,7 @@ import * as Schema from "effect/Schema";
 import { resolveAttachmentPath } from "../attachmentStore.ts";
 import { rpcAuthorizationError } from "../auth/RpcAuthorization.ts";
 import * as ServerConfig from "../config.ts";
+import { decideProfile, PlacementBookRef } from "../placement/PlacementBook.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as Orchestrator from "./Orchestrator.ts";
@@ -128,6 +130,45 @@ export const withQueuedAttachmentsOnSignOutText = Effect.fn(
   return { ...command, attachments };
 });
 
+/**
+ * For a thread tagged `placement:<id>`: the account its next turn should run on. An explicit
+ * choice in the send wins; otherwise the thread stays put until its account must be left.
+ */
+const placementSelection = Effect.fn("ThreadMessageIntake.placementSelection")(function* (input: {
+  readonly profileId: string | null;
+  readonly current: ModelSelection;
+  readonly requested: ModelSelection | undefined;
+  readonly projectId: ProjectId;
+}) {
+  const none = { inProfile: false, selection: null } as const;
+  if (input.profileId === null) return none;
+  const settings = yield* ServerSettings.ServerSettingsService.pipe(
+    Effect.flatMap((service) => service.getSettings),
+    Effect.orElseSucceed(() => null),
+  );
+  if (settings === null || settings.placementProfiles[input.profileId] === undefined) return none;
+  if (
+    input.requested !== undefined &&
+    (input.requested.instanceId !== input.current.instanceId ||
+      input.requested.model !== input.current.model)
+  ) {
+    return { inProfile: true, selection: null } as const;
+  }
+  const providers = yield* ProviderRegistry.ProviderRegistry.pipe(
+    Effect.flatMap((registry) => registry.getProviders),
+  );
+  const book = yield* PlacementBookRef;
+  const decision = decideProfile(book, {
+    profileId: input.profileId,
+    settings,
+    providers,
+    now: DateTime.toEpochMillis(yield* DateTime.now),
+    projectId: input.projectId,
+  });
+  const target = decision === null ? null : placementMoveTarget(decision, input.current);
+  return { inProfile: true, selection: target?.to ?? null } as const;
+});
+
 /** Null unless the user lets sends move off an account that is out of usage. */
 const readAccountChoice = Effect.fn("ThreadMessageIntake.readAccountChoice")(function* () {
   const settings = yield* ServerSettings.ServerSettingsService.pipe(
@@ -156,8 +197,16 @@ const withAvailableAccount = Effect.fn("ThreadMessageIntake.withAvailableAccount
   ) {
     return { command, fallback: undefined };
   }
-  const choose = yield* readAccountChoice();
-  if (choose === null) return { command, fallback: undefined };
+  const current = yield* ServerSettings.ServerSettingsService.pipe(
+    Effect.flatMap((service) => service.getSettings),
+    Effect.orElseSucceed(() => null),
+  );
+  if (
+    current === null ||
+    (!current.fallbackToAvailableAccounts && Object.keys(current.placementProfiles).length === 0)
+  ) {
+    return { command, fallback: undefined };
+  }
   const threads = yield* ThreadManagement.ThreadManagementService;
   const records = yield* threads
     .getThreadRecords(command.threadId, [])
@@ -165,7 +214,18 @@ const withAvailableAccount = Effect.fn("ThreadMessageIntake.withAvailableAccount
   if (records === null) return { command, fallback: undefined };
   const { thread } = records;
   const selection = command.modelSelection ?? thread.modelSelection;
-  const next = choose(selection, thread.projectId);
+  const placed = yield* placementSelection({
+    profileId: placementProfileOfTags(thread.tags),
+    current: thread.modelSelection,
+    requested: command.modelSelection,
+    projectId: thread.projectId,
+  });
+  // A thread in a placement profile is scheduled by it, not by the account fallback.
+  const choose = placed.inProfile ? null : yield* readAccountChoice();
+  if (!placed.inProfile && choose === null) return { command, fallback: undefined };
+  const next = placed.inProfile
+    ? (placed.selection ?? selection)
+    : choose!(selection, thread.projectId);
   return {
     command: next === selection ? command : { ...command, modelSelection: next },
     fallback:

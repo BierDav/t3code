@@ -140,6 +140,12 @@ import { assertTargetWithinLimits, isLiveCallerShell, threadNotFound } from "./t
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
+import { placementProfileOfTags, placementTag } from "@t3tools/shared/placement";
+import {
+  launchProfileId,
+  launchSelection,
+  placementCapabilities,
+} from "../placement/placementLaunch.ts";
 
 // Return recoverable handles before common MCP client timeouts expire.
 const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
@@ -2820,6 +2826,16 @@ const make = Effect.gen(function* () {
           scheduledTasks: true,
           maxBatchThreads: 20,
         },
+        ...(Object.keys(settings.placementProfiles).length === 0
+          ? {}
+          : {
+              placement: yield* placementCapabilities(
+                settings,
+                machineProviders,
+                parent?.thread.projectId,
+                placementProfileOfTags(parent?.thread.tags),
+              ),
+            }),
       };
     }),
     delegateTask: Effect.fn("OrchestratorMcpService.delegateTask")(function* (callerScope, input) {
@@ -2870,13 +2886,50 @@ const make = Effect.gen(function* () {
         operation: "delegate-task",
       });
       const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
-      const target = yield* resolveTargetRechecking({
+      const requestedTarget = yield* resolveTargetRechecking({
         parent,
         target: input.target,
         providers,
         cwd: yield* parentWorkspaceCwd(parent),
         skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
       });
+      // A child in a placement profile starts on the account the scheduler picks now.
+      const placementSettings = yield* serverSettings.getSettings.pipe(
+        Effect.orElseSucceed(() => null),
+      );
+      const childProfile =
+        placementSettings === null || isRetryOfAcceptedDelegation
+          ? null
+          : launchProfileId({
+              settings: placementSettings,
+              requested: input.placementProfile,
+              role: input.role,
+              parentProfile: placementProfileOfTags(parent.thread.tags),
+              explicitModel:
+                input.target?.model === undefined ? undefined : requestedTarget.modelSelection,
+            });
+      const placed =
+        childProfile === null || placementSettings === null
+          ? null
+          : yield* launchSelection({
+              profileId: childProfile,
+              settings: placementSettings,
+              providers,
+              projectId: parent.thread.projectId,
+            });
+      const target =
+        placed === null
+          ? requestedTarget
+          : yield* resolveTargetRechecking({
+              parent,
+              target: {
+                providerInstanceId: placed.instanceId,
+                model: placed.model,
+                ...(placed.options === undefined ? {} : { options: placed.options }),
+              },
+              providers,
+              cwd: yield* parentWorkspaceCwd(parent),
+            });
       const runtimeMode = yield* resolveRuntimeMode(
         parent.thread.runtimeMode,
         input.runtimeMode,
@@ -2967,6 +3020,21 @@ const make = Effect.gen(function* () {
           }
           const taskId = taskEvent.event.payload.id;
           const childThreadId = taskEvent.event.payload.childThreadId;
+          if (childProfile !== null && childThreadId !== null) {
+            yield* threadManagement
+              .dispatch({
+                type: "thread.tag.set",
+                commandId: CommandId.make(`${commandId}:placement-tag`),
+                threadId: childThreadId,
+                tag: placementTag(childProfile),
+                tagged: true,
+              })
+              .pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("placement.child-tag-failed", { childThreadId, cause }),
+                ),
+              );
+          }
           const childRunEvent = result.storedEvents.find(
             (stored) =>
               stored.event.type === "run.created" && stored.event.threadId === childThreadId,
