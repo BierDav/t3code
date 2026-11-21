@@ -1,6 +1,7 @@
 import { m } from "../i18n/messages";
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { useGT, useMessages } from "gt-react";
+import { usePlacementPickRelease } from "./chat/usePlacementPickRelease";
 import { ChildThreadApprovals } from "./chat/ChildThreadApprovals";
 import { workspaceAreaProps } from "../lib/workspaceFocus";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
@@ -1321,6 +1322,12 @@ export default function ChatView(props: ChatViewProps) {
     { modelSelectionExplicit: composerModelSelectionExplicit },
     threadHasStarted(activeThread),
   );
+  usePlacementPickRelease({
+    threadRef: isServerThread ? routeThreadRef : null,
+    threadStarted: threadHasStarted(activeThread),
+    threadModelSelection: activeThread?.modelSelection,
+    placementProfiles: serverConfig?.settings?.placementProfiles,
+  });
   const selectedProviderByThreadId = composerModelSelectionApplies ? composerActiveProvider : null;
   const threadProvider =
     activeThread?.modelSelection.instanceId ??

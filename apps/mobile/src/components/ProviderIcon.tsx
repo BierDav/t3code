@@ -1,5 +1,5 @@
 import { Image } from "expo-image";
-import { Defs, LinearGradient, Path, Stop, Svg } from "react-native-svg";
+import { Circle, Defs, G, LinearGradient, Path, Stop, Svg } from "react-native-svg";
 import { View } from "react-native";
 import {
   normalizeProviderAccentColor,
@@ -86,6 +86,25 @@ export function ProviderIcon(props: ProviderIconProps) {
   }
   if (props.provider === "acpRegistry") {
     return <AcpRegistryProviderIcon color={mono} iconUrl={props.iconUrl} size={size} />;
+  }
+
+  // Placement profiles (the server's "Profiles" provider): one thread routed to an account.
+  if (props.provider === "placement") {
+    return (
+      <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+        <G stroke="#7c5cff" strokeWidth={1.8} strokeLinecap="round">
+          <Path d="M7 12c4.2 0 4.8-7 9.6-7" />
+          <Path d="M7 12h9.6" opacity={0.4} />
+          <Path d="M7 12c4.2 0 4.8 7 9.6 7" opacity={0.4} />
+        </G>
+        <G fill="#7c5cff">
+          <Circle cx={4.6} cy={12} r={2.6} />
+          <Circle cx={19.2} cy={5} r={2.6} />
+          <Circle cx={19.2} cy={12} r={2} opacity={0.4} />
+          <Circle cx={19.2} cy={19} r={2} opacity={0.4} />
+        </G>
+      </Svg>
+    );
   }
 
   if (props.provider === "claudeAgent") {

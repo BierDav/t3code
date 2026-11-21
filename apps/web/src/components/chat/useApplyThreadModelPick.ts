@@ -7,6 +7,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import { isPlacementPick } from "@t3tools/contracts";
 import { useContext } from "react";
 
 import { type ComposerThreadTarget, useComposerDraftStore } from "../../composerDraftStore";
@@ -29,8 +30,9 @@ export function useApplyThreadModelPick() {
     const thread = registry.get(environmentThreadShells.threadShellAtom(target));
     if (!pick || !thread || store.draftThreadsByThreadKey[scopedThreadKey(target)]) return;
     // Another instance replaces the live session, which may hold an open question; that pick
-    // still waits for a sent message.
-    if (pick.instanceId !== thread.modelSelection.instanceId) return;
+    // still waits for a sent message. A placement profile pick is not an instance: the server
+    // swaps in the profile's account (the thread's own while it can run) and tags the thread.
+    if (pick.instanceId !== thread.modelSelection.instanceId && !isPlacementPick(pick)) return;
     const result = await setModelSelection({
       environmentId: target.environmentId,
       input: { threadId: target.threadId, modelSelection: pick },
