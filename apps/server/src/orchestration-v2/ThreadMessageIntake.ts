@@ -17,6 +17,11 @@ import { resolveAttachmentPath } from "../attachmentStore.ts";
 import { rpcAuthorizationError } from "../auth/RpcAuthorization.ts";
 import * as ServerConfig from "../config.ts";
 import { decideProfile, PlacementBookRef } from "../placement/PlacementBook.ts";
+import {
+  placementTagCommands,
+  resolvePlacementPick,
+  staysInProfile,
+} from "../placement/placementPick.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as Orchestrator from "./Orchestrator.ts";
@@ -131,8 +136,8 @@ export const withQueuedAttachmentsOnSignOutText = Effect.fn(
 });
 
 /**
- * For a thread tagged `placement:<id>`: the account its next turn should run on. An explicit
- * choice in the send wins; otherwise the thread stays put until its account must be left.
+ * For a thread tagged `placement:<id>`: the account its next turn should run on. The send's
+ * account (an explicit pick inside the profile, else the thread's) stays until it must be left.
  */
 const placementSelection = Effect.fn("ThreadMessageIntake.placementSelection")(function* (input: {
   readonly profileId: string | null;
@@ -147,13 +152,6 @@ const placementSelection = Effect.fn("ThreadMessageIntake.placementSelection")(f
     Effect.orElseSucceed(() => null),
   );
   if (settings === null || settings.placementProfiles[input.profileId] === undefined) return none;
-  if (
-    input.requested !== undefined &&
-    (input.requested.instanceId !== input.current.instanceId ||
-      input.requested.model !== input.current.model)
-  ) {
-    return { inProfile: true, selection: null } as const;
-  }
   const providers = yield* ProviderRegistry.ProviderRegistry.pipe(
     Effect.flatMap((registry) => registry.getProviders),
   );
@@ -165,7 +163,8 @@ const placementSelection = Effect.fn("ThreadMessageIntake.placementSelection")(f
     now: DateTime.toEpochMillis(yield* DateTime.now),
     projectId: input.projectId,
   });
-  const target = decision === null ? null : placementMoveTarget(decision, input.current);
+  const target =
+    decision === null ? null : placementMoveTarget(decision, input.requested ?? input.current);
   return { inProfile: true, selection: target?.to ?? null } as const;
 });
 
@@ -244,7 +243,82 @@ const withAvailableAccount = Effect.fn("ThreadMessageIntake.withAvailableAccount
  * has already checked every command whose payload shows a provider sign-out; a queued edit
  * that keeps its attachments is the one case decided here.
  */
-export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(function* (
+/**
+ * A pick of the placement provider becomes the account its profile chooses, and the thread
+ * joins that profile; an account outside the thread's profile takes it out of the profile.
+ * Tag changes on an existing thread land before the command, so the send sees them; a new
+ * thread is tagged once it exists.
+ */
+const withPlacementPick = Effect.fn("ThreadMessageIntake.withPlacementPick")(function* (
+  command: OrchestrationV2Command,
+) {
+  const none = { command, after: Effect.void };
+  if (command.type === "thread.create") {
+    const picked = yield* resolvePlacementPick({
+      selection: command.modelSelection,
+      projectId: command.projectId,
+    });
+    if (picked === null) return none;
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    return {
+      command: { ...command, modelSelection: picked.selection },
+      after: Effect.forEach(
+        placementTagCommands({
+          threadId: command.threadId,
+          tags: [],
+          profileId: picked.profileId,
+          commandId: command.commandId,
+        }),
+        (tag) => threads.dispatch(tag),
+        { discard: true },
+      ).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("placement.tag-failed", { threadId: command.threadId, cause }),
+        ),
+      ),
+    };
+  }
+  if (command.type !== "message.dispatch" && command.type !== "thread.model-selection.set") {
+    return none;
+  }
+  const requested = command.modelSelection;
+  if (requested === undefined) return none;
+  const threads = yield* ThreadManagement.ThreadManagementService;
+  const records = yield* threads
+    .getThreadRecords(command.threadId, [])
+    .pipe(Effect.orElseSucceed(() => null));
+  if (records === null) return none;
+  const { thread } = records;
+  const tags = thread.tags ?? [];
+  const profileId = placementProfileOfTags(tags);
+  const picked = yield* resolvePlacementPick({
+    selection: requested,
+    projectId: thread.projectId,
+    current: thread.modelSelection,
+  });
+  const nextProfile =
+    picked !== null
+      ? picked.profileId
+      : profileId !== null && !(yield* staysInProfile(profileId, requested))
+        ? null
+        : profileId;
+  yield* Effect.forEach(
+    placementTagCommands({
+      threadId: thread.id,
+      tags,
+      profileId: nextProfile,
+      commandId: command.commandId,
+    }),
+    (tag) => threads.dispatch(tag),
+    { discard: true },
+  );
+  return {
+    command: picked === null ? command : { ...command, modelSelection: picked.selection },
+    after: Effect.void,
+  };
+});
+
+const dispatchPrepared = Effect.fn("ThreadMessageIntake.dispatchPrepared")(function* (
   incoming: OrchestrationV2Command,
   sender: { readonly managesProviders: boolean },
 ) {
@@ -381,6 +455,22 @@ export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(
           : Effect.void,
       ),
     );
+});
+
+export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(function* (
+  incoming: OrchestrationV2Command,
+  sender: { readonly managesProviders: boolean },
+) {
+  const picked = yield* withPlacementPick(incoming).pipe(
+    Effect.catchCause((cause) =>
+      Effect.logWarning("placement.pick-failed", { commandId: incoming.commandId, cause }).pipe(
+        Effect.as({ command: incoming, after: Effect.void }),
+      ),
+    ),
+  );
+  const result = yield* dispatchPrepared(picked.command, sender);
+  yield* picked.after;
+  return result;
 });
 
 export const sendToThread = Effect.fn("ThreadMessageIntake.sendToThread")(function* (

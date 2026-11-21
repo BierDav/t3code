@@ -1,6 +1,8 @@
 import {
   isProviderAvailable,
   type ModelSelection,
+  PLACEMENT_DRIVER_KIND,
+  PLACEMENT_INSTANCE_ID,
   PLACEMENT_TAG_PREFIX,
   type PlacementActiveHours,
   type PlacementEntry,
@@ -43,6 +45,86 @@ export function sameEntry(
   b: Pick<ModelSelection, "instanceId" | "model">,
 ) {
   return a.instanceId === b.instanceId && a.model === b.model;
+}
+
+const PLACEMENT_PROVIDER_NAME = "Profiles";
+
+/**
+ * The provider the pickers show for placement: one model per profile. Null without profiles.
+ * Every client lists it like any other provider, so picking a profile needs no client support.
+ */
+export function placementProvider(
+  settings: Pick<ServerSettings, "placementProfiles">,
+  checkedAt: string,
+): ServerProvider | null {
+  const profiles = Object.entries(settings.placementProfiles);
+  if (profiles.length === 0) return null;
+  return {
+    instanceId: PLACEMENT_INSTANCE_ID,
+    driver: PLACEMENT_DRIVER_KIND,
+    displayName: PLACEMENT_PROVIDER_NAME,
+    supportsTextGeneration: false,
+    enabled: true,
+    installed: true,
+    version: null,
+    status: "ready",
+    auth: { status: "authenticated" },
+    checkedAt,
+    models: profiles.map(([id, profile]) => ({
+      slug: id,
+      name: profile.label,
+      isCustom: false,
+      supportsTextGeneration: false,
+      capabilities: null,
+    })),
+    slashCommands: [],
+    skills: [],
+  };
+}
+
+/** The providers a client sees: the placement provider replaces any snapshot under its id. */
+export function withPlacementProvider(
+  providers: ReadonlyArray<ServerProvider>,
+  settings: Pick<ServerSettings, "placementProfiles">,
+  checkedAt: string,
+): ReadonlyArray<ServerProvider> {
+  const others = providers.filter((provider) => provider.instanceId !== PLACEMENT_INSTANCE_ID);
+  const placement = placementProvider(settings, checkedAt);
+  return placement === null ? others : [...others, placement];
+}
+
+/**
+ * Clients only offer instances the settings turn on, and an instance missing from them is off
+ * unless it is a built-in default, so the client copy of the settings lists the placement one.
+ */
+export function withPlacementInstanceSetting<
+  S extends Pick<ServerSettings, "placementProfiles" | "providerInstances">,
+>(settings: S): S {
+  if (Object.keys(settings.placementProfiles).length === 0) return settings;
+  return {
+    ...settings,
+    providerInstances: {
+      ...settings.providerInstances,
+      [PLACEMENT_INSTANCE_ID]: {
+        driver: PLACEMENT_DRIVER_KIND,
+        displayName: PLACEMENT_PROVIDER_NAME,
+        enabled: true,
+      },
+    },
+  };
+}
+
+/** The account a pick of the profile starts on: its ranked choice, else its first turned-on entry. */
+export function placementPickSelection(
+  decision: PlacementProfileDecision | null,
+  profile: PlacementProfile | undefined,
+) {
+  return (
+    decision?.next ??
+    profile?.entries.find((entry) => entry.enabled)?.selection ??
+    profile?.entries[0]?.selection ??
+    null
+  );
 }
 
 export interface PlacementLoad {

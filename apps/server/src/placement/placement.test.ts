@@ -8,6 +8,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { makePlacementBook, recordSessionSample } from "./PlacementBook.ts";
 import { launchProfileId } from "./placementLaunch.ts";
+import { placementTagCommands } from "./placementPick.ts";
 import { continuationText, parentNoticeText } from "./PlacementWorker.ts";
 
 const claude = (model: string) => ({ instanceId: ProviderInstanceId.make("claudeAgent"), model });
@@ -87,5 +88,32 @@ describe("move messages", () => {
     expect(parentNoticeText("thread-1" as never, from, to, "A limit is at 96%.")).toContain(
       "no action is needed",
     );
+  });
+});
+
+describe("placementTagCommands", () => {
+  const base = { threadId: "thread-1" as never, commandId: "cmd" };
+
+  it("swaps the thread's placement tag and keeps its other tags", () => {
+    const commands = placementTagCommands({
+      ...base,
+      tags: ["mine", "placement:coding"],
+      profileId: "review",
+    });
+    expect(commands.map((command) => [command.tag, command.tagged])).toEqual([
+      ["placement:coding", false],
+      ["placement:review", true],
+    ]);
+  });
+
+  it("does nothing when the thread already has the tag, and clears it for no profile", () => {
+    expect(
+      placementTagCommands({ ...base, tags: ["placement:coding"], profileId: "coding" }),
+    ).toEqual([]);
+    expect(
+      placementTagCommands({ ...base, tags: ["placement:coding"], profileId: null }).map(
+        (command) => command.tagged,
+      ),
+    ).toEqual([false]);
   });
 });

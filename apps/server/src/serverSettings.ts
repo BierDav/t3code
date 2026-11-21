@@ -1,6 +1,7 @@
 import {
   DEFAULT_SERVER_SETTINGS,
   ModelSelection,
+  PLACEMENT_INSTANCE_ID,
   ProjectId,
   ProjectScript,
   keepUnknownOverrideKeys,
@@ -30,6 +31,7 @@ import * as Duration from "effect/Duration";
 import * as Equal from "effect/Equal";
 import * as Effect from "effect/Effect";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import { withPlacementInstanceSetting } from "@t3tools/shared/placement";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -156,7 +158,17 @@ export function redactServerSettingsForClient(
     : mapSettingsSecretValues(redacted, (value) =>
         isSecretReference(value) ? SECRET_REDACTED : value,
       );
-  return { ...shaped, secretProviders: withoutUnknownSecretProviderConfigs(shaped) };
+  return withPlacementInstanceSetting({
+    ...shaped,
+    secretProviders: withoutUnknownSecretProviderConfigs(shaped),
+  });
+}
+
+/** Clients see the placement provider instance the server adds for them; it is never stored. */
+function withoutPlacementInstance(settings: ServerSettings): ServerSettings {
+  if (!Object.hasOwn(settings.providerInstances, PLACEMENT_INSTANCE_ID)) return settings;
+  const { [PLACEMENT_INSTANCE_ID]: _placement, ...providerInstances } = settings.providerInstances;
+  return { ...settings, providerInstances };
 }
 
 /** A client shown a reference as a saved secret sends that marker back; it keeps the reference. */
@@ -1207,7 +1219,7 @@ const make = Effect.gen(function* () {
         // a removed provider's reference is cleared below rather than restored by persistence.
         const updated = withoutRedirectedSimlockTokens(
           current,
-          withEchoedSecretReferences(current, yield* update(current)),
+          withEchoedSecretReferences(current, withoutPlacementInstance(yield* update(current))),
         );
         // Vet before secrets: a variable the policy hides from clients is not one they removed.
         const vetted = managed.vetWrite(current, yield* normalizeServerSettings(updated), patch);

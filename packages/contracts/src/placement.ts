@@ -3,9 +3,23 @@ import * as Schema from "effect/Schema";
 
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { ModelSelection } from "./modelSelection.ts";
+import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 
 /** A thread runs in a placement profile while it carries the tag `placement:<id>`. */
 export const PLACEMENT_TAG_PREFIX = "placement:";
+
+/**
+ * The provider instance the server lists with one model per placement profile. Picking one of
+ * its models (`{ instanceId: "placement", model: "<profile id>" }`) starts or moves a thread into
+ * that profile; the server swaps in the account the profile picks before anything runs, so no
+ * thread ever runs on this instance.
+ */
+export const PLACEMENT_INSTANCE_ID = ProviderInstanceId.make("placement");
+export const PLACEMENT_DRIVER_KIND = ProviderDriverKind.make("placement");
+
+export function isPlacementPick(selection: { readonly instanceId: string } | null | undefined) {
+  return selection?.instanceId === PLACEMENT_INSTANCE_ID;
+}
 
 export const PlacementProfileId = TrimmedNonEmptyString.check(
   Schema.isMaxLength(40),

@@ -279,6 +279,7 @@ import * as SessionStore from "./auth/SessionStore.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 import { isNetworkPath } from "@t3tools/shared/path";
+import { withPlacementProvider } from "@t3tools/shared/placement";
 import * as RelayClient from "@t3tools/shared/relayClient";
 import {
   SOCKET_FRAME_PARTS_QUERY_PARAM,
@@ -1830,6 +1831,19 @@ export const layerWsRpc = (
           ),
         );
 
+      // Clients list placement profiles as one more provider, so each picker can start a thread in one.
+      const withClientPlacement = (providers: ReadonlyArray<ServerProvider>) =>
+        serverSettings.getSettings.pipe(
+          Effect.map((settings) =>
+            withPlacementProvider(
+              providers,
+              settings,
+              providers[0]?.checkedAt ?? "1970-01-01T00:00:00.000Z",
+            ),
+          ),
+          Effect.orElseSucceed(() => providers),
+        );
+
       const loadServerConfig = Effect.fn("ws.loadServerConfig")(function* (options: {
         readonly usageLimitsCommand: boolean;
         readonly workspaceSnapshotsOnDemand: boolean;
@@ -1838,7 +1852,7 @@ export const layerWsRpc = (
         readonly catalogDigests?: boolean;
       }) {
         const keybindingsConfig = yield* keybindings.loadConfigState;
-        const currentProviders = yield* providerRegistry.getProviders;
+        const currentProviders = yield* withClientPlacement(yield* providerRegistry.getProviders);
         const commandProviders = options.usageLimitsCommand
           ? withUsageLimitsCommands(currentProviders, yield* usageLimitSources.current)
           : currentProviders;
@@ -2557,6 +2571,7 @@ export const layerWsRpc = (
                 providers = yield* providerRegistry.refreshInstance(instance.instanceId);
               }
             }
+            providers = yield* withClientPlacement(providers);
             const { instanceId, cwd } = input;
             if (input.omitProviders === true && (instanceId === undefined || cwd === undefined)) {
               return { providers: [] };
@@ -3486,6 +3501,7 @@ export const layerWsRpc = (
                 (providers, sources) =>
                   usageLimitsCommand ? withUsageLimitsCommands(providers, sources) : providers,
               ).pipe(
+                Stream.mapEffect(withClientPlacement),
                 // Stripped before the de-dupe below, so snapshot-only changes send nothing.
                 Stream.mapEffect((commandProviders) =>
                   workspaceSnapshotsOnDemand

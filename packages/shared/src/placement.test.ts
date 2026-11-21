@@ -1,5 +1,7 @@
 import {
   DEFAULT_PLACEMENT_POLICY,
+  DEFAULT_SERVER_SETTINGS,
+  PLACEMENT_INSTANCE_ID,
   ProviderDriverKind,
   ProviderInstanceId,
   type ModelSelection,
@@ -15,10 +17,13 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   placementMoveTarget,
+  placementPickSelection,
   placementProfileOfTags,
   placementTag,
   rankPlacementProfile,
   usableHours,
+  withPlacementInstanceSetting,
+  withPlacementProvider,
   type PlacementLoad,
 } from "./placement.ts";
 
@@ -268,5 +273,47 @@ describe("placement tags", () => {
   it("round-trips the profile id", () => {
     expect(placementProfileOfTags(["x", placementTag("review")])).toBe("review");
     expect(placementProfileOfTags(["x"])).toBeNull();
+  });
+});
+
+describe("placement provider", () => {
+  const settings = {
+    ...DEFAULT_SERVER_SETTINGS,
+    placementProfiles: { coding: profile([{ selection: david, enabled: true }]) },
+  };
+
+  it("lists one model per profile and replaces a stored snapshot under its id", () => {
+    const stale = { ...provider, instanceId: PLACEMENT_INSTANCE_ID, status: "error" as const };
+    const providers = withPlacementProvider([provider, stale], settings, "2026-11-21T14:00:00Z");
+    expect(providers).toHaveLength(2);
+    expect(providers[1]).toMatchObject({
+      instanceId: PLACEMENT_INSTANCE_ID,
+      displayName: "Profiles",
+      status: "ready",
+      models: [{ slug: "coding", name: "Coding", supportsTextGeneration: false }],
+    });
+  });
+
+  it("is absent without profiles", () => {
+    expect(withPlacementProvider([provider], DEFAULT_SERVER_SETTINGS, "x")).toEqual([provider]);
+    expect(withPlacementInstanceSetting(DEFAULT_SERVER_SETTINGS)).toBe(DEFAULT_SERVER_SETTINGS);
+  });
+
+  it("turns the instance on for clients", () => {
+    expect(withPlacementInstanceSetting(settings).providerInstances[PLACEMENT_INSTANCE_ID]).toEqual(
+      expect.objectContaining({ enabled: true }),
+    );
+  });
+
+  it("starts a pick on the ranked choice, else the first turned-on entry", () => {
+    const coding = profile([
+      { selection: david, enabled: false },
+      { selection: one, enabled: true },
+    ]);
+    expect(placementPickSelection(null, coding)).toEqual(one);
+    expect(placementPickSelection({ id: "c", label: "C", next: alex, ranked: [] }, coding)).toEqual(
+      alex,
+    );
+    expect(placementPickSelection(null, undefined)).toBeNull();
   });
 });
