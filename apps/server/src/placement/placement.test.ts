@@ -253,38 +253,197 @@ describe("Prism placement sync", () => {
   it.effect(
     "syncs profiles/policy into settings, applies each move once, and acks on the next sync",
     () => {
-    const requests: Array<{ auth: string | null; body: PrismSyncRequest }> = [];
-    const dispatched: Array<unknown> = [];
-    const threadId = ThreadId.make("thr-1");
-    const runId = RunId.make("run-1");
+      const requests: Array<{ auth: string | null; body: PrismSyncRequest }> = [];
+      const dispatched: Array<unknown> = [];
+      const threadId = ThreadId.make("thr-1");
+      const runId = RunId.make("run-1");
 
-    let currentThread: OrchestrationV2ThreadShell = {
+      let currentThread: OrchestrationV2ThreadShell = {
+        id: threadId,
+        projectId: "proj-1" as never,
+        title: "Fix build",
+        modelSelection: claude("claude-david/claude-opus-5-5"),
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        status: "running",
+        activeRunId: runId,
+        latestRunId: runId,
+        latestRunCompletedAt: null,
+        lastErrorClass: null,
+        pendingRuntimeRequest: null,
+        tags: ["placement:coding"],
+        archivedAt: null,
+        updatedAt: DateTime.makeUnsafe("2026-11-21T18:00:00.000Z"),
+        lineage: { parentThreadId: null, relationshipToParent: null },
+      } as unknown as OrchestrationV2ThreadShell;
+
+      const prismResponse: PrismSyncResponse = {
+        v: 1,
+        checkedAt: "2026-11-21T18:20:00Z",
+        policy: {
+          switchAtPercent: 90,
+          weeklySlackSessions: 2,
+          roleProfiles: { review: "review" },
+        },
+        profiles: [
+          {
+            id: "coding",
+            label: "Coding",
+            entries: [
+              { selection: claude("claude-david/claude-opus-5-5"), enabled: true },
+              { selection: claude("claude-1/claude-opus-5-5"), enabled: true },
+            ],
+            next: claude("claude-1/claude-opus-5-5"),
+            ranked: [
+              {
+                selection: claude("claude-1/claude-opus-5-5"),
+                state: "ok",
+                reason: "Session window at 10%.",
+                runningThreads: 0,
+              },
+            ],
+          },
+        ],
+        moves: [
+          {
+            id: "mac:thr-1:claude-1:1",
+            threadId: "thr-1",
+            from: claude("claude-david/claude-opus-5-5"),
+            to: claude("claude-1/claude-opus-5-5"),
+            reason: "A limit is at 96%, at or past the 95% switch point.",
+          },
+        ],
+      };
+
+      const fakeFetch: typeof fetch = async (_url, init) => {
+        const headers = new Headers(init?.headers);
+        requests.push({
+          auth: headers.get("authorization"),
+          body: JSON.parse(String(init?.body)) as PrismSyncRequest,
+        });
+        return new Response(JSON.stringify(prismResponse), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      };
+
+      const book = makePlacementBook();
+      const layer = Layer.mergeAll(
+        ServerSettingsService.layerTest({
+          placementSource: {
+            url: "https://prism.example.test",
+            tokenFile: "/etc/prism/token",
+            enabled: true,
+          },
+        }),
+        Layer.succeed(ProviderRegistry.ProviderRegistry, {
+          getProviders: Effect.succeed([provider]),
+        } as unknown as ProviderRegistry.ProviderRegistry["Service"]),
+        Layer.succeed(UsageLimitSources.UsageLimitSources, {
+          current: Effect.succeed([]),
+        } as unknown as UsageLimitSources.UsageLimitSources["Service"]),
+        Layer.succeed(ProjectionStore.ProjectionStoreV2, {
+          getShellSnapshot: () => Effect.succeed({ threads: [currentThread] }),
+        } as unknown as ProjectionStore.ProjectionStoreV2["Service"]),
+        Layer.succeed(ThreadManagement.ThreadManagementService, {
+          dispatch: (cmd: { readonly type: string }) => {
+            dispatched.push(cmd);
+            if (cmd.type === "run.interrupt") {
+              currentThread = {
+                ...currentThread,
+                status: "interrupted",
+                activeRunId: null,
+              };
+            }
+            return Effect.void;
+          },
+        } as unknown as ThreadManagement.ThreadManagementService["Service"]),
+        Layer.succeed(Orchestrator.OrchestratorV2, {
+          dispatch: () => Effect.void,
+        } as unknown as Orchestrator.OrchestratorV2["Service"]),
+        Layer.succeed(FileSystem.FileSystem, {
+          readFileString: (path: string) =>
+            path === "/etc/prism/token"
+              ? Effect.succeed("  secret-machine-token\n")
+              : Effect.die(`unexpected path ${path}`),
+        } as unknown as FileSystem.FileSystem),
+      );
+
+      let fakeNow = 1_000_000;
+      const program = Effect.gen(function* () {
+        const sweep = yield* makePlacementSweep({
+          fetchImpl: fakeFetch,
+          nowMs: () => fakeNow,
+        });
+        const settingsSvc = yield* ServerSettingsService.ServerSettingsService;
+
+        // Sweep 1: syncs with Prism, writes settings, interrupts the running thread.
+        yield* sweep();
+        const afterFirst = yield* settingsSvc.getSettings;
+        expect(Object.keys(afterFirst.placementProfiles)).toEqual(["coding"]);
+        expect(afterFirst.placementPolicy.switchAtPercent).toBe(90);
+        expect(requests).toHaveLength(1);
+        expect(requests[0]?.auth).toBe("Bearer secret-machine-token");
+        expect(requests[0]?.body.models[0]?.reasoning).toEqual({
+          optionId: "effort",
+          levels: ["low", "high"],
+          default: "high",
+        });
+        expect(requests[0]?.body.threads).toHaveLength(1);
+        expect(dispatched.map((c) => (c as { type: string }).type)).toEqual(["run.interrupt"]);
+
+        // Sweep 2 (after 30s): thread is now interrupted -> continues on target, does not re-apply move.
+        fakeNow += 31_000;
+        yield* sweep();
+        expect(requests).toHaveLength(2);
+        expect(dispatched.map((c) => (c as { type: string }).type)).toEqual([
+          "run.interrupt",
+          "message.dispatch",
+        ]);
+
+        // Sweep 3 (after 30s): acks the completed move to Prism and still does not re-apply it.
+        fakeNow += 31_000;
+        yield* sweep();
+        expect(requests).toHaveLength(3);
+        expect(requests[2]?.body.moves).toEqual([
+          { id: "mac:thr-1:claude-1:1", state: "continued" },
+        ]);
+        expect(dispatched).toHaveLength(2);
+      }).pipe(Effect.provide(layer), Effect.provideService(PlacementBookRef, book));
+
+      return program;
+    },
+  );
+
+  it.effect.each([
+    { name: "Prism asks for no move", withPrismMove: false },
+    { name: "Prism also asks for the move", withPrismMove: true },
+  ])("continues a run that hit its usage limit exactly once when $name", ({ withPrismMove }) => {
+    const threadId = ThreadId.make("thr-limit");
+    const runId = RunId.make("run-limit");
+    const fakeNow = 1_000_000;
+    const thread = {
       id: threadId,
       projectId: "proj-1" as never,
       title: "Fix build",
       modelSelection: claude("claude-david/claude-opus-5-5"),
       runtimeMode: "full-access",
       interactionMode: "default",
-      status: "running",
-      activeRunId: runId,
+      status: "failed",
+      activeRunId: null,
       latestRunId: runId,
-      latestRunCompletedAt: null,
-      lastErrorClass: null,
+      latestRunCompletedAt: DateTime.makeUnsafe(fakeNow - 60_000),
+      lastErrorClass: "usage_limit",
       pendingRuntimeRequest: null,
       tags: ["placement:coding"],
       archivedAt: null,
-      updatedAt: DateTime.makeUnsafe("2026-11-21T18:00:00.000Z"),
+      updatedAt: DateTime.makeUnsafe(fakeNow - 60_000),
       lineage: { parentThreadId: null, relationshipToParent: null },
     } as unknown as OrchestrationV2ThreadShell;
-
-    const prismResponse: PrismSyncResponse = {
+    // Prism's readings lag: it still ranks the account the run just failed on first.
+    const response: PrismSyncResponse = {
       v: 1,
       checkedAt: "2026-11-21T18:20:00Z",
-      policy: {
-        switchAtPercent: 90,
-        weeklySlackSessions: 2,
-        roleProfiles: { review: "review" },
-      },
       profiles: [
         {
           id: "coding",
@@ -293,8 +452,14 @@ describe("Prism placement sync", () => {
             { selection: claude("claude-david/claude-opus-5-5"), enabled: true },
             { selection: claude("claude-1/claude-opus-5-5"), enabled: true },
           ],
-          next: claude("claude-1/claude-opus-5-5"),
+          next: claude("claude-david/claude-opus-5-5"),
           ranked: [
+            {
+              selection: claude("claude-david/claude-opus-5-5"),
+              state: "ok",
+              reason: "Session window at 80%.",
+              runningThreads: 0,
+            },
             {
               selection: claude("claude-1/claude-opus-5-5"),
               state: "ok",
@@ -304,37 +469,22 @@ describe("Prism placement sync", () => {
           ],
         },
       ],
-      moves: [
-        {
-          id: "mac:thr-1:claude-1:1",
-          threadId: "thr-1",
-          from: claude("claude-david/claude-opus-5-5"),
-          to: claude("claude-1/claude-opus-5-5"),
-          reason: "A limit is at 96%, at or past the 95% switch point.",
-        },
-      ],
+      moves: withPrismMove
+        ? [
+            {
+              id: "mac:thr-limit:claude-1:1",
+              threadId: "thr-limit",
+              from: claude("claude-david/claude-opus-5-5"),
+              to: claude("claude-1/claude-opus-5-5"),
+              reason: "Out of usage.",
+            },
+          ]
+        : [],
     };
-
-    const fakeFetch: typeof fetch = async (_url, init) => {
-      const headers = new Headers(init?.headers);
-      requests.push({
-        auth: headers.get("authorization"),
-        body: JSON.parse(String(init?.body)) as PrismSyncRequest,
-      });
-      return new Response(JSON.stringify(prismResponse), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    };
-
-    const book = makePlacementBook();
+    const dispatched: Array<{ readonly type: string }> = [];
     const layer = Layer.mergeAll(
       ServerSettingsService.layerTest({
-        placementSource: {
-          url: "https://prism.example.test",
-          tokenFile: "/etc/prism/token",
-          enabled: true,
-        },
+        placementSource: { url: "https://prism.example.test", tokenFile: "/t", enabled: true },
       }),
       Layer.succeed(ProviderRegistry.ProviderRegistry, {
         getProviders: Effect.succeed([provider]),
@@ -343,18 +493,11 @@ describe("Prism placement sync", () => {
         current: Effect.succeed([]),
       } as unknown as UsageLimitSources.UsageLimitSources["Service"]),
       Layer.succeed(ProjectionStore.ProjectionStoreV2, {
-        getShellSnapshot: () => Effect.succeed({ threads: [currentThread] }),
+        getShellSnapshot: () => Effect.succeed({ threads: [thread] }),
       } as unknown as ProjectionStore.ProjectionStoreV2["Service"]),
       Layer.succeed(ThreadManagement.ThreadManagementService, {
         dispatch: (cmd: { readonly type: string }) => {
           dispatched.push(cmd);
-          if (cmd.type === "run.interrupt") {
-            currentThread = {
-              ...currentThread,
-              status: "interrupted",
-              activeRunId: null,
-            };
-          }
           return Effect.void;
         },
       } as unknown as ThreadManagement.ThreadManagementService["Service"]),
@@ -362,58 +505,20 @@ describe("Prism placement sync", () => {
         dispatch: () => Effect.void,
       } as unknown as Orchestrator.OrchestratorV2["Service"]),
       Layer.succeed(FileSystem.FileSystem, {
-        readFileString: (path: string) =>
-          path === "/etc/prism/token"
-            ? Effect.succeed("  secret-machine-token\n")
-            : Effect.die(`unexpected path ${path}`),
+        readFileString: () => Effect.succeed("token"),
       } as unknown as FileSystem.FileSystem),
     );
-
-    let fakeNow = 1_000_000;
-    const program = Effect.gen(function* () {
+    return Effect.gen(function* () {
       const sweep = yield* makePlacementSweep({
-        fetchImpl: fakeFetch,
+        fetchImpl: async () =>
+          new Response(JSON.stringify(response), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
         nowMs: () => fakeNow,
       });
-      const settingsSvc = yield* ServerSettingsService.ServerSettingsService;
-
-      // Sweep 1: syncs with Prism, writes settings, interrupts the running thread.
       yield* sweep();
-      const afterFirst = yield* settingsSvc.getSettings;
-      expect(Object.keys(afterFirst.placementProfiles)).toEqual(["coding"]);
-      expect(afterFirst.placementPolicy.switchAtPercent).toBe(90);
-      expect(requests).toHaveLength(1);
-      expect(requests[0]?.auth).toBe("Bearer secret-machine-token");
-      expect(requests[0]?.body.models[0]?.reasoning).toEqual({
-        optionId: "effort",
-        levels: ["low", "high"],
-        default: "high",
-      });
-      expect(requests[0]?.body.threads).toHaveLength(1);
-      expect(dispatched.map((c) => (c as { type: string }).type)).toEqual(["run.interrupt"]);
-
-      // Sweep 2 (after 30s): thread is now interrupted -> continues on target, does not re-apply move.
-      fakeNow += 31_000;
-      yield* sweep();
-      expect(requests).toHaveLength(2);
-      expect(dispatched.map((c) => (c as { type: string }).type)).toEqual([
-        "run.interrupt",
-        "message.dispatch",
-      ]);
-
-      // Sweep 3 (after 30s): acks the completed move to Prism and still does not re-apply it.
-      fakeNow += 31_000;
-      yield* sweep();
-      expect(requests).toHaveLength(3);
-      expect(requests[2]?.body.moves).toEqual([
-        { id: "mac:thr-1:claude-1:1", state: "continued" },
-      ]);
-      expect(dispatched).toHaveLength(2);
-    }).pipe(
-      Effect.provide(layer),
-      Effect.provideService(PlacementBookRef, book),
-    );
-
-    return program;
+      expect(dispatched.filter((c) => c.type === "message.dispatch")).toHaveLength(1);
+    }).pipe(Effect.provide(layer), Effect.provideService(PlacementBookRef, makePlacementBook()));
   });
 });

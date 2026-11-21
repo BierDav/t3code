@@ -30,6 +30,8 @@ export class PrismSyncError extends Schema.TaggedError<PrismSyncError>()("PrismS
 
 const encodeJsonUnknown = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
+const SYNC_TIMEOUT_MS = 20_000;
+
 const REASONING_OPTION_IDS = new Set(["effort", "reasoningEffort", "reasoning", "thought_level"]);
 
 export interface PrismMoveAck {
@@ -133,7 +135,12 @@ export function buildPrismSyncRequest(input: {
         providers: input.providers,
         settings: input.settings,
       });
-      const readings = placementWindowReadings(selection, input.providers, input.sources, input.nowMs);
+      const readings = placementWindowReadings(
+        selection,
+        input.providers,
+        input.sources,
+        input.nowMs,
+      );
       models.push({
         instanceId: provider.instanceId,
         model: model.slug,
@@ -208,6 +215,8 @@ export const syncWithPrism = Effect.fn("placement.syncWithPrism")(function* (inp
           ...(token.length > 0 ? { authorization: `Bearer ${token}` } : {}),
         },
         body: serialized,
+        // A Prism that does not answer must not hold up the placement sweep.
+        signal: AbortSignal.timeout(SYNC_TIMEOUT_MS),
       }),
     catch: (cause) => new PrismSyncError({ message: "Prism sync request failed", cause }),
   });

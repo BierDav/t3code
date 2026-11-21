@@ -53,7 +53,7 @@ const PLACEMENT_PROVIDER_NAME = "Profiles";
  * The provider the pickers show for placement: one model per profile. Null without profiles.
  * Every client lists it like any other provider, so picking a profile needs no client support.
  */
-export function placementProvider(
+function placementProvider(
   settings: Pick<ServerSettings, "placementProfiles">,
   checkedAt: string,
 ): ServerProvider | null {
