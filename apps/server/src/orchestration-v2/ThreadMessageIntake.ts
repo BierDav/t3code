@@ -299,9 +299,11 @@ const withPlacementPick = Effect.fn("ThreadMessageIntake.withPlacementPick")(fun
   const nextProfile =
     picked !== null
       ? picked.profileId
-      : profileId !== null && !(yield* staysInProfile(profileId, requested))
+      : command.type === "thread.model-selection.set"
         ? null
-        : profileId;
+        : profileId !== null && !(yield* staysInProfile(profileId, requested))
+          ? null
+          : profileId;
   yield* Effect.forEach(
     placementTagCommands({
       threadId: thread.id,

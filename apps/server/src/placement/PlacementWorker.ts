@@ -62,6 +62,8 @@ interface PendingMove {
   readonly at: string;
   readonly startedMs: number;
   readonly prismMoveId?: string | undefined;
+  readonly stage: "interrupting" | "compacting";
+  readonly compactRunId?: RunId | undefined;
 }
 
 const label = (selection: ModelSelection) => selection.model;
@@ -173,7 +175,7 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
 
   const notifyParent = Effect.fnUntraced(function* (
     thread: OrchestrationV2ThreadShell,
-    move: PendingMove,
+    move: Omit<PendingMove, "stage" | "compactRunId">,
   ) {
     const parentId = thread.lineage.parentThreadId;
     if (parentId === null || thread.lineage.relationshipToParent !== "subagent") return;
@@ -203,7 +205,7 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
 
   const continueOn = Effect.fnUntraced(function* (
     thread: OrchestrationV2ThreadShell,
-    move: PendingMove,
+    move: Omit<PendingMove, "stage" | "compactRunId">,
   ) {
     const key = `${thread.id}:${move.runId}`;
     yield* threads.dispatch({
@@ -211,7 +213,6 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
       commandId: CommandId.make(`placement-move:${key}`),
       messageId: MessageId.make(`placement-move:${key}`),
       threadId: thread.id,
-      manualContinuationOfRunId: move.runId,
       modelSelection: move.to,
       text: continuationText(move.from, move.to, move.reason),
       attachments: [],
@@ -335,6 +336,31 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
     for (const thread of shell.threads) {
       const waiting = pending.get(thread.id);
       if (waiting === undefined) continue;
+      if (waiting.stage === "compacting") {
+        if (isLive(thread) && nowMs - waiting.startedMs <= INTERRUPT_TIMEOUT_MS) {
+          continue;
+        }
+        pending.delete(thread.id);
+        yield* continueOn(thread, waiting).pipe(
+          Effect.catchCause((cause) =>
+            Effect.gen(function* () {
+              recordMove(book, { threadId: thread.id, ...waiting, state: "failed" });
+              if (waiting.prismMoveId !== undefined) {
+                pendingAcks.push({
+                  id: waiting.prismMoveId,
+                  state: "failed",
+                  detail: "continue failed",
+                });
+              }
+              yield* Effect.logWarning("placement.continue-failed", {
+                threadId: thread.id,
+                cause,
+              });
+            }),
+          ),
+        );
+        continue;
+      }
       if (thread.activeRunId === waiting.runId && isLive(thread)) {
         if (nowMs - waiting.startedMs > INTERRUPT_TIMEOUT_MS) {
           pending.delete(thread.id);
@@ -354,6 +380,35 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
         thread.latestRunId === waiting.runId &&
         (thread.status === "interrupted" || thread.status === "failed")
       ) {
+        if (thread.status === "interrupted") {
+          const compactKey = `${thread.id}:${waiting.runId}`;
+          const compacted = yield* threads
+            .dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make(`placement-compact:${compactKey}`),
+              messageId: MessageId.make(`placement-compact:${compactKey}`),
+              threadId: thread.id,
+              modelSelection: waiting.from,
+              text: "/compact",
+              attachments: [],
+              dispatchMode: { type: "start_immediately" },
+              createdBy: "user",
+              creationSource: "server",
+            })
+            .pipe(
+              Effect.as(true),
+              Effect.catchCause((cause) =>
+                Effect.logWarning("placement.compact-failed", {
+                  threadId: thread.id,
+                  cause,
+                }).pipe(Effect.as(false)),
+              ),
+            );
+          if (compacted) {
+            pending.set(thread.id, { ...waiting, stage: "compacting", startedMs: nowMs });
+            continue;
+          }
+        }
         yield* continueOn(thread, waiting).pipe(
           Effect.catchCause((cause) =>
             Effect.gen(function* () {
@@ -401,6 +456,7 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
             at,
             startedMs: nowMs,
             prismMoveId: prismMove.id,
+            stage: "interrupting",
           };
           const interrupted = yield* threads
             .dispatch({
@@ -568,6 +624,7 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
         reason: target.reason,
         at: DateTime.formatIso(DateTime.makeUnsafe(nowMs)),
         startedMs: nowMs,
+        stage: "interrupting",
       };
       const interrupted = yield* threads
         .dispatch({
