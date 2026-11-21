@@ -158,9 +158,8 @@ jobs:
       VERSION: ${{ needs.prepare.outputs.version }}
     steps:
       - *merge
+      # A full install: the server typecheck also covers the root scripts package.
       - uses: ./.github/actions/setup-ci-deps
-        with:
-          install-args: --filter=t3... --filter=@t3tools/shared... --filter=@t3tools/contracts...
       - name: Typecheck
         run: |
           set -euo pipefail
