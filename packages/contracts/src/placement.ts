@@ -90,6 +90,13 @@ export const DEFAULT_PLACEMENT_POLICY: PlacementPolicy = {
 export const PlacementProfiles = Schema.Record(PlacementProfileId, PlacementProfile);
 export type PlacementProfiles = typeof PlacementProfiles.Type;
 
+export const PlacementSourceConfig = Schema.Struct({
+  url: TrimmedNonEmptyString,
+  tokenFile: TrimmedNonEmptyString,
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+});
+export type PlacementSourceConfig = typeof PlacementSourceConfig.Type;
+
 export const PlacementEntryState = Schema.Literals([
   "ok",
   "promoted",

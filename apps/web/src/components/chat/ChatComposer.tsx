@@ -39,10 +39,12 @@ import type {
   ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
+import { placementDisplaySelection } from "@t3tools/shared/placement";
 import {
   EnvironmentRequestInvalidError,
   AuthOrchestrationOperateScope,
   clampManagedRuntimeMode,
+  PLACEMENT_DRIVER_KIND,
   ProviderDriverKind,
   ProviderInstanceId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
@@ -2501,6 +2503,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     : composerControlsCollapsed
       ? 0
       : expandedControlsIconOnlyBlockCount;
+  const pickerDisplaySelection = placementDisplaySelection({
+    selection: selectedModelSelection,
+    tags: activeThread?.tags,
+    placementProfiles: settings.placementProfiles,
+  });
+  const pickerDisplayShowingProfile = pickerDisplaySelection.instanceId !== selectedInstanceId;
   const composerControls = (
     <ComposerControlsBar
       environmentId={environmentId}
@@ -2508,9 +2516,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       routeKind={routeKind}
       routeThreadRef={routeThreadRef}
       draftId={draftId}
-      selectedProvider={selectedProvider}
-      selectedInstanceId={selectedInstanceId}
-      selectedModel={selectedModel}
+      selectedProvider={pickerDisplayShowingProfile ? PLACEMENT_DRIVER_KIND : selectedProvider}
+      selectedInstanceId={pickerDisplaySelection.instanceId}
+      selectedModel={pickerDisplaySelection.model}
       selectedProviderModels={selectedProviderModels}
       composerModelOptions={composerModelOptions}
       reportedModelSelection={reportedModelSelection}
@@ -2534,10 +2542,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       multipleModelsEnabled={routeKind === "draft" && supportsMultipleModels}
       multipleModelSelections={multipleModelSelections}
       onMultipleModelSelectionsChange={setMultipleModelSelections}
-      selectedModelSelection={selectedModelSelection}
+      selectedModelSelection={pickerDisplaySelection}
       onProviderModelSelect={onProviderModelSelect}
       activeThreadModelSelection={activeThreadModelSelection}
-      selectedModelForPickerWithCustomFallback={selectedModelForPickerWithCustomFallback}
+      selectedModelForPickerWithCustomFallback={
+        pickerDisplayShowingProfile
+          ? pickerDisplaySelection.model
+          : selectedModelForPickerWithCustomFallback
+      }
       lockedProvider={lockedProvider}
       lockedContinuationGroupKey={lockedContinuationGroupKey}
       providerInstanceEntries={providerInstanceEntries}

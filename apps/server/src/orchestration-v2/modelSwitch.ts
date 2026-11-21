@@ -3,9 +3,11 @@ import {
   type ModelSelection,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2TurnItem,
+  PLACEMENT_INSTANCE_ID,
 } from "@t3tools/contracts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
+import { placementProfileOfTags } from "@t3tools/shared/placement";
 
 /**
  * Clients hide pending queued messages, fold async answers into their question, and replace
@@ -35,7 +37,9 @@ export const anchorsModelSwitch = (run: ModelSwitchRun, shownMessageIds: Readonl
  * the handoff item already shows those.
  */
 export function modelSwitchSince(
-  projection: Pick<OrchestrationV2ThreadProjection, "runs" | "turnItems">,
+  projection: Pick<OrchestrationV2ThreadProjection, "runs" | "turnItems"> & {
+    readonly thread?: Pick<OrchestrationV2ThreadProjection["thread"], "tags"> | undefined;
+  },
   to: ModelSelection,
   baseline?: ModelSelection,
 ): Pick<Extract<OrchestrationV2TurnItem, { type: "user_message" }>, "modelSwitch"> {
@@ -50,6 +54,15 @@ export function modelSwitchSince(
     if (!anchorsModelSwitch(run, shown)) continue;
     if (previous === undefined || runRanAfter(run, previous)) previous = run;
   }
-  const from = previous?.modelSelection ?? baseline;
+  const placementProfileId =
+    previous === undefined && baseline === undefined
+      ? placementProfileOfTags(projection.thread?.tags)
+      : null;
+  const from =
+    previous?.modelSelection ??
+    baseline ??
+    (placementProfileId === null
+      ? undefined
+      : { instanceId: PLACEMENT_INSTANCE_ID, model: placementProfileId });
   return from === undefined || modelSelectionsEqual(from, to) ? {} : { modelSwitch: { from, to } };
 }

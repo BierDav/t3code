@@ -19,6 +19,8 @@ const HOUR = 3_600_000;
 const BURN_WINDOW_MS = 45 * 60_000;
 const MIN_BURN_SPAN_MS = 10 * 60_000;
 const MAX_MOVES = 50;
+/** How long a remote placement provider's ranking stays authoritative before local fallback. */
+export const REMOTE_DECISION_TTL_MS = 2 * 60_000;
 
 interface Sample {
   readonly at: number;
@@ -37,6 +39,8 @@ export interface PlacementBook {
   readonly samples: Map<string, Sample[]>;
   readonly burn: Map<string, number>;
   readonly moves: PlacementMove[];
+  readonly remoteDecisions: Map<string, PlacementProfileDecision>;
+  remoteCheckedAt: number;
   checkedAt: number;
 }
 
@@ -47,6 +51,8 @@ export function makePlacementBook(): PlacementBook {
     samples: new Map(),
     burn: new Map(),
     moves: [],
+    remoteDecisions: new Map(),
+    remoteCheckedAt: 0,
     checkedAt: 0,
   };
 }
@@ -109,6 +115,18 @@ export function recordMove(book: PlacementBook, move: PlacementMove) {
   book.moves.length = Math.min(book.moves.length, MAX_MOVES);
 }
 
+export function recordRemoteDecisions(
+  book: PlacementBook,
+  decisions: ReadonlyArray<PlacementProfileDecision>,
+  nowMs: number,
+) {
+  book.remoteDecisions.clear();
+  for (const decision of decisions) {
+    book.remoteDecisions.set(decision.id, decision);
+  }
+  book.remoteCheckedAt = nowMs;
+}
+
 export function decideProfile(
   book: PlacementBook,
   input: {
@@ -119,6 +137,10 @@ export function decideProfile(
     readonly projectId?: ProjectId | null;
   },
 ): PlacementProfileDecision | null {
+  if (book.remoteCheckedAt > 0 && input.now - book.remoteCheckedAt < REMOTE_DECISION_TTL_MS) {
+    const remote = book.remoteDecisions.get(input.profileId);
+    if (remote !== undefined) return remote;
+  }
   const profile = input.settings.placementProfiles[input.profileId];
   if (profile === undefined) return null;
   return rankPlacementProfile({

@@ -1,15 +1,43 @@
 import {
   DEFAULT_PLACEMENT_POLICY,
   DEFAULT_SERVER_SETTINGS,
+  type OrchestrationV2ThreadShell,
+  ProviderDriverKind,
   ProviderInstanceId,
+  RunId,
+  type ServerProvider,
   type ServerSettings,
+  ThreadId,
 } from "@t3tools/contracts";
-import { describe, expect, it } from "vite-plus/test";
+import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import { describe, expect, it } from "@effect/vitest";
 
-import { makePlacementBook, recordSessionSample } from "./PlacementBook.ts";
+import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import * as ServerSettingsService from "../serverSettings.ts";
+import * as UsageLimitSources from "../usage/UsageLimitSources.ts";
+import {
+  decideProfile,
+  makePlacementBook,
+  PlacementBookRef,
+  recordRemoteDecisions,
+  recordSessionSample,
+  REMOTE_DECISION_TTL_MS,
+} from "./PlacementBook.ts";
 import { launchProfileId } from "./placementLaunch.ts";
 import { placementTagCommands } from "./placementPick.ts";
-import { continuationText, parentNoticeText } from "./PlacementWorker.ts";
+import {
+  continuationText,
+  makePlacementSweep,
+  parentNoticeText,
+  shortAccountLabel,
+} from "./PlacementWorker.ts";
+import type { PrismSyncRequest, PrismSyncResponse } from "./prismSync.ts";
 
 const claude = (model: string) => ({ instanceId: ProviderInstanceId.make("claudeAgent"), model });
 
@@ -115,5 +143,277 @@ describe("placementTagCommands", () => {
         (command) => command.tagged,
       ),
     ).toEqual([false]);
+  });
+});
+
+describe("shortAccountLabel", () => {
+  it("extracts the account prefix before slash or falls back to the model slug", () => {
+    expect(shortAccountLabel(claude("claude-david/claude-opus-5-5"))).toBe("claude-david");
+    expect(shortAccountLabel(claude("gpt-6-astra"))).toBe("gpt-6-astra");
+  });
+});
+
+describe("Prism placement sync", () => {
+  const provider: ServerProvider = {
+    instanceId: ProviderInstanceId.make("claudeAgent"),
+    driver: ProviderDriverKind.make("claudeAgent"),
+    displayName: "Claude",
+    supportsTextGeneration: true,
+    enabled: true,
+    installed: true,
+    version: "1.0.0",
+    status: "ready",
+    auth: { status: "authenticated" },
+    checkedAt: "2026-11-21T18:00:00.000Z",
+    models: [
+      {
+        slug: "claude-david/claude-opus-5-5",
+        name: "Opus 5.5 · claude-david",
+        isCustom: false,
+        supportsTextGeneration: true,
+        capabilities: {
+          optionDescriptors: [
+            {
+              id: "effort",
+              label: "Effort",
+              type: "select",
+              role: "reasoning",
+              options: [
+                { id: "low", label: "Low" },
+                { id: "high", label: "High", isDefault: true },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        slug: "claude-1/claude-opus-5-5",
+        name: "Opus 5.5 · claude-1",
+        isCustom: false,
+        supportsTextGeneration: true,
+        capabilities: null,
+      },
+    ],
+    slashCommands: [],
+    skills: [],
+  };
+
+  it("uses Prism's remote decision while fresh and falls back to local ranking when stale", () => {
+    const book = makePlacementBook();
+    const localSettings: ServerSettings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      placementProfiles: {
+        coding: {
+          label: "Coding",
+          entries: [
+            { selection: claude("claude-david/claude-opus-5-5"), enabled: true },
+            { selection: claude("claude-1/claude-opus-5-5"), enabled: true },
+          ],
+        },
+      },
+    };
+    const t0 = 1_000_000;
+    recordRemoteDecisions(
+      book,
+      [
+        {
+          id: "coding",
+          label: "Coding",
+          next: claude("claude-1/claude-opus-5-5"),
+          ranked: [
+            {
+              selection: claude("claude-1/claude-opus-5-5"),
+              state: "promoted",
+              reason: "Prism picked claude-1.",
+              runningThreads: 0,
+            },
+          ],
+        },
+      ],
+      t0,
+    );
+
+    const fresh = decideProfile(book, {
+      profileId: "coding",
+      settings: localSettings,
+      providers: [provider],
+      now: t0 + REMOTE_DECISION_TTL_MS - 1_000,
+    });
+    expect(fresh?.next).toEqual(claude("claude-1/claude-opus-5-5"));
+
+    const stale = decideProfile(book, {
+      profileId: "coding",
+      settings: localSettings,
+      providers: [provider],
+      now: t0 + REMOTE_DECISION_TTL_MS + 1_000,
+    });
+    expect(stale?.next).toEqual(claude("claude-david/claude-opus-5-5"));
+  });
+
+  it.effect(
+    "syncs profiles/policy into settings, applies each move once, and acks on the next sync",
+    () => {
+    const requests: Array<{ auth: string | null; body: PrismSyncRequest }> = [];
+    const dispatched: Array<unknown> = [];
+    const threadId = ThreadId.make("thr-1");
+    const runId = RunId.make("run-1");
+
+    let currentThread: OrchestrationV2ThreadShell = {
+      id: threadId,
+      projectId: "proj-1" as never,
+      title: "Fix build",
+      modelSelection: claude("claude-david/claude-opus-5-5"),
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      status: "running",
+      activeRunId: runId,
+      latestRunId: runId,
+      latestRunCompletedAt: null,
+      lastErrorClass: null,
+      pendingRuntimeRequest: null,
+      tags: ["placement:coding"],
+      archivedAt: null,
+      updatedAt: DateTime.makeUnsafe("2026-11-21T18:00:00.000Z"),
+      lineage: { parentThreadId: null, relationshipToParent: null },
+    } as unknown as OrchestrationV2ThreadShell;
+
+    const prismResponse: PrismSyncResponse = {
+      v: 1,
+      checkedAt: "2026-11-21T18:20:00Z",
+      policy: {
+        switchAtPercent: 90,
+        weeklySlackSessions: 2,
+        roleProfiles: { review: "review" },
+      },
+      profiles: [
+        {
+          id: "coding",
+          label: "Coding",
+          entries: [
+            { selection: claude("claude-david/claude-opus-5-5"), enabled: true },
+            { selection: claude("claude-1/claude-opus-5-5"), enabled: true },
+          ],
+          next: claude("claude-1/claude-opus-5-5"),
+          ranked: [
+            {
+              selection: claude("claude-1/claude-opus-5-5"),
+              state: "ok",
+              reason: "Session window at 10%.",
+              runningThreads: 0,
+            },
+          ],
+        },
+      ],
+      moves: [
+        {
+          id: "mac:thr-1:claude-1:1",
+          threadId: "thr-1",
+          from: claude("claude-david/claude-opus-5-5"),
+          to: claude("claude-1/claude-opus-5-5"),
+          reason: "A limit is at 96%, at or past the 95% switch point.",
+        },
+      ],
+    };
+
+    const fakeFetch: typeof fetch = async (_url, init) => {
+      const headers = new Headers(init?.headers);
+      requests.push({
+        auth: headers.get("authorization"),
+        body: JSON.parse(String(init?.body)) as PrismSyncRequest,
+      });
+      return new Response(JSON.stringify(prismResponse), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+
+    const book = makePlacementBook();
+    const layer = Layer.mergeAll(
+      ServerSettingsService.layerTest({
+        placementSource: {
+          url: "https://prism.example.test",
+          tokenFile: "/etc/prism/token",
+          enabled: true,
+        },
+      }),
+      Layer.succeed(ProviderRegistry.ProviderRegistry, {
+        getProviders: Effect.succeed([provider]),
+      } as unknown as ProviderRegistry.ProviderRegistry["Service"]),
+      Layer.succeed(UsageLimitSources.UsageLimitSources, {
+        current: Effect.succeed([]),
+      } as unknown as UsageLimitSources.UsageLimitSources["Service"]),
+      Layer.succeed(ProjectionStore.ProjectionStoreV2, {
+        getShellSnapshot: () => Effect.succeed({ threads: [currentThread] }),
+      } as unknown as ProjectionStore.ProjectionStoreV2["Service"]),
+      Layer.succeed(ThreadManagement.ThreadManagementService, {
+        dispatch: (cmd: { readonly type: string }) => {
+          dispatched.push(cmd);
+          if (cmd.type === "run.interrupt") {
+            currentThread = {
+              ...currentThread,
+              status: "interrupted",
+              activeRunId: null,
+            };
+          }
+          return Effect.void;
+        },
+      } as unknown as ThreadManagement.ThreadManagementService["Service"]),
+      Layer.succeed(Orchestrator.OrchestratorV2, {
+        dispatch: () => Effect.void,
+      } as unknown as Orchestrator.OrchestratorV2["Service"]),
+      Layer.succeed(FileSystem.FileSystem, {
+        readFileString: (path: string) =>
+          path === "/etc/prism/token"
+            ? Effect.succeed("  secret-machine-token\n")
+            : Effect.die(`unexpected path ${path}`),
+      } as unknown as FileSystem.FileSystem),
+    );
+
+    let fakeNow = 1_000_000;
+    const program = Effect.gen(function* () {
+      const sweep = yield* makePlacementSweep({
+        fetchImpl: fakeFetch,
+        nowMs: () => fakeNow,
+      });
+      const settingsSvc = yield* ServerSettingsService.ServerSettingsService;
+
+      // Sweep 1: syncs with Prism, writes settings, interrupts the running thread.
+      yield* sweep();
+      const afterFirst = yield* settingsSvc.getSettings;
+      expect(Object.keys(afterFirst.placementProfiles)).toEqual(["coding"]);
+      expect(afterFirst.placementPolicy.switchAtPercent).toBe(90);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.auth).toBe("Bearer secret-machine-token");
+      expect(requests[0]?.body.models[0]?.reasoning).toEqual({
+        optionId: "effort",
+        levels: ["low", "high"],
+        default: "high",
+      });
+      expect(requests[0]?.body.threads).toHaveLength(1);
+      expect(dispatched.map((c) => (c as { type: string }).type)).toEqual(["run.interrupt"]);
+
+      // Sweep 2 (after 30s): thread is now interrupted -> continues on target, does not re-apply move.
+      fakeNow += 31_000;
+      yield* sweep();
+      expect(requests).toHaveLength(2);
+      expect(dispatched.map((c) => (c as { type: string }).type)).toEqual([
+        "run.interrupt",
+        "message.dispatch",
+      ]);
+
+      // Sweep 3 (after 30s): acks the completed move to Prism and still does not re-apply it.
+      fakeNow += 31_000;
+      yield* sweep();
+      expect(requests).toHaveLength(3);
+      expect(requests[2]?.body.moves).toEqual([
+        { id: "mac:thr-1:claude-1:1", state: "continued" },
+      ]);
+      expect(dispatched).toHaveLength(2);
+    }).pipe(
+      Effect.provide(layer),
+      Effect.provideService(PlacementBookRef, book),
+    );
+
+    return program;
   });
 });

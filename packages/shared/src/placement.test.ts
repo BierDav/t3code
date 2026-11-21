@@ -16,6 +16,7 @@ import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  placementDisplaySelection,
   placementMoveTarget,
   placementPickSelection,
   placementProfileOfTags,
@@ -315,5 +316,35 @@ describe("placement provider", () => {
       alex,
     );
     expect(placementPickSelection(null, undefined)).toBeNull();
+  });
+
+  it("displays the profile while a tagged thread runs on one of its accounts", () => {
+    const profiles = {
+      coding: profile([
+        { selection: david, enabled: true },
+        { selection: one, enabled: true },
+      ]),
+    };
+    expect(
+      placementDisplaySelection({
+        selection: david,
+        tags: ["placement:coding"],
+        placementProfiles: profiles,
+      }),
+    ).toEqual({ instanceId: PLACEMENT_INSTANCE_ID, model: "coding" });
+    expect(
+      placementDisplaySelection({
+        selection: alex,
+        tags: ["placement:coding"],
+        placementProfiles: profiles,
+      }),
+    ).toEqual(alex);
+    expect(
+      placementDisplaySelection({
+        selection: david,
+        tags: [],
+        placementProfiles: profiles,
+      }),
+    ).toEqual(david);
   });
 });

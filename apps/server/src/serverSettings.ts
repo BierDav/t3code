@@ -160,6 +160,7 @@ export function redactServerSettingsForClient(
       );
   return withPlacementInstanceSetting({
     ...shaped,
+    placementSource: null,
     secretProviders: withoutUnknownSecretProviderConfigs(shaped),
   });
 }

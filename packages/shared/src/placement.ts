@@ -114,6 +114,21 @@ export function withPlacementInstanceSetting<
   };
 }
 
+/** The selection a model picker shows for a thread: its profile while it runs on one of its accounts. */
+export function placementDisplaySelection(input: {
+  readonly selection: ModelSelection;
+  readonly tags: ReadonlyArray<string> | undefined;
+  readonly placementProfiles: ServerSettings["placementProfiles"] | undefined;
+}): ModelSelection {
+  const profileId = placementProfileOfTags(input.tags);
+  if (profileId === null) return input.selection;
+  const profile = input.placementProfiles?.[profileId];
+  if (!profile?.entries.some((entry) => sameEntry(entry.selection, input.selection))) {
+    return input.selection;
+  }
+  return { instanceId: PLACEMENT_INSTANCE_ID, model: profileId };
+}
+
 /** The account a pick of the profile starts on: its ranked choice, else its first turned-on entry. */
 export function placementPickSelection(
   decision: PlacementProfileDecision | null,
@@ -212,6 +227,33 @@ export function placementWindows(
   return modelUsageWindows(provider, selection.model);
 }
 
+export function placementWindowReadings(
+  selection: ModelSelection,
+  providers: ReadonlyArray<ServerProvider>,
+  sources: ReadonlyArray<UsageLimitSourceSnapshot>,
+  now: number,
+): {
+  readonly session?: Reading;
+  readonly weekly?: Reading;
+  readonly all?: Reading;
+} {
+  const windows = placementWindows(selection, providers, sources, now) ?? [];
+  const session = worst(
+    windows.filter((window) => window.kind === "session"),
+    now,
+  );
+  const weekly = worst(
+    windows.filter((window) => window.kind === "weekly"),
+    now,
+  );
+  const all = worst(windows, now);
+  return {
+    ...(session === undefined ? {} : { session }),
+    ...(weekly === undefined ? {} : { weekly }),
+    ...(all === undefined ? {} : { all }),
+  };
+}
+
 /** Hours from `now` to `until` that fall inside the active hours (every hour without them). */
 export function usableHours(
   now: number,
@@ -236,7 +278,7 @@ export function usableHours(
   return total / HOUR;
 }
 
-function selectionRunnable(
+export function selectionRunnable(
   selection: ModelSelection,
   input: Pick<PlacementRankInput, "providers" | "settings" | "projectId">,
 ) {

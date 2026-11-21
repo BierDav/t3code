@@ -35,7 +35,12 @@ import {
   ProviderOptionSelections,
 } from "./model.ts";
 import { ModelSelection } from "./modelSelection.ts";
-import { DEFAULT_PLACEMENT_POLICY, PlacementPolicy, PlacementProfiles } from "./placement.ts";
+import {
+  DEFAULT_PLACEMENT_POLICY,
+  PlacementPolicy,
+  PlacementProfiles,
+  PlacementSourceConfig,
+} from "./placement.ts";
 import { ProjectScript, type ProjectMutation } from "./project.ts";
 import { DEFAULT_RUNTIME_MODE, RuntimeMode } from "./providerPolicy.ts";
 import { BrowserProfile, BrowserProfileId, DEFAULT_BROWSER_PROFILE_ID } from "./browserProfile.ts";
@@ -1452,6 +1457,9 @@ export const ServerSettings = Schema.Struct({
   placementPolicy: PlacementPolicy.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PLACEMENT_POLICY)),
   ),
+  placementSource: Schema.NullOr(PlacementSourceConfig).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   defaultRuntimeMode: RuntimeMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE)),
   ),
@@ -1909,6 +1917,7 @@ export const ServerSettingsPatch = Schema.Struct({
   fallbackToAvailableAccounts: Schema.optionalKey(Schema.Boolean),
   placementProfiles: Schema.optionalKey(PlacementProfiles),
   placementPolicy: Schema.optionalKey(PlacementPolicy),
+  placementSource: Schema.optionalKey(Schema.NullOr(PlacementSourceConfig)),
   /** Replaces each project's override set; null removes it. Omitted providerInstances retains its stored value. */
   projectSettingsOverrides: Schema.optionalKey(
     Schema.Record(
