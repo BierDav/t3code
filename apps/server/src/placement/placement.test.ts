@@ -392,23 +392,33 @@ describe("Prism placement sync", () => {
         expect(requests[0]?.body.threads).toHaveLength(1);
         expect(dispatched.map((c) => (c as { type: string }).type)).toEqual(["run.interrupt"]);
 
-        // Sweep 2 (after 30s): thread is now interrupted -> continues on target, does not re-apply move.
+        // Sweep 2: compact on the original account after the interrupt.
         fakeNow += 31_000;
         yield* sweep();
         expect(requests).toHaveLength(2);
-        expect(dispatched.map((c) => (c as { type: string }).type)).toEqual([
-          "run.interrupt",
-          "message.dispatch",
-        ]);
+        expect(dispatched[1]).toMatchObject({
+          type: "message.dispatch",
+          text: "/compact",
+          modelSelection: prismResponse.moves?.[0]?.from,
+        });
 
-        // Sweep 3 (after 30s): acks the completed move to Prism and still does not re-apply it.
+        // Sweep 3: the compaction is no longer running, so continue on the target.
         fakeNow += 31_000;
         yield* sweep();
         expect(requests).toHaveLength(3);
-        expect(requests[2]?.body.moves).toEqual([
+        expect(dispatched[2]).toMatchObject({
+          type: "message.dispatch",
+          modelSelection: prismResponse.moves?.[0]?.to,
+        });
+
+        // Sweep 4: acknowledge the completed move without applying it again.
+        fakeNow += 31_000;
+        yield* sweep();
+        expect(requests).toHaveLength(4);
+        expect(requests[3]?.body.moves).toEqual([
           { id: "mac:thr-1:claude-1:1", state: "continued" },
         ]);
-        expect(dispatched).toHaveLength(2);
+        expect(dispatched).toHaveLength(3);
       }).pipe(Effect.provide(layer), Effect.provideService(PlacementBookRef, book));
 
       return program;
