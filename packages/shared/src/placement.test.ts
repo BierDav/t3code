@@ -64,13 +64,14 @@ const windows = (
   session: number,
   weekly: number,
   weeklyResetHours = 72,
+  sessionResetHours = 3,
 ): ServerProviderUsageWindow[] => [
   {
     id: "five_hour",
     kind: "session",
     label: "Session",
     usedPercent: session,
-    resetsAt: hours(3),
+    resetsAt: hours(sessionResetHours),
   },
   {
     id: "seven_day",
@@ -172,7 +173,7 @@ describe("rankPlacementProfile", () => {
     expect(decision.ranked[1]).toMatchObject({ state: "ok", weeklySlackSessions: 4.2 });
   });
 
-  it("spends a weekly window past the switch point that resets within a session", () => {
+  it("has no switch point for the weekly window", () => {
     const entries = [
       { selection: one, enabled: true, sessionShareOfWeekly: 13.2 },
       { selection: david, enabled: true, sessionShareOfWeekly: 13.7 },
@@ -188,8 +189,26 @@ describe("rankPlacementProfile", () => {
     expect(at(97, 1).next).toEqual(david);
     expect(at(97, 1).ranked[0]).toMatchObject({ selection: david, state: "promoted" });
     expect(at(97, 72).next).toEqual(one);
-    expect(at(97, 72).ranked[1]).toMatchObject({ selection: david, state: "over_threshold" });
+    expect(at(97, 72).ranked[1]).toMatchObject({ selection: david, state: "ok" });
     expect(at(100, 1).next).toEqual(one);
+  });
+
+  it("lets a session window within 30 minutes of its reset run into the limit", () => {
+    const at = (sessionResetHours: number) =>
+      rank({
+        entries: [
+          { selection: david, enabled: true },
+          { selection: one, enabled: true },
+        ],
+        accounts: [
+          account("claude-david.json", david.model, windows(97, 50, 72, sessionResetHours)),
+          account("claude-1.json", one.model, windows(10, 20)),
+        ],
+      });
+    expect(at(0.4).next).toEqual(david);
+    expect(at(0.4).ranked[0]).toMatchObject({ selection: david, state: "ok" });
+    expect(at(0.6).next).toEqual(one);
+    expect(at(0.6).ranked[1]).toMatchObject({ selection: david, state: "over_threshold" });
   });
 
   it("counts only active hours for the weekly rule when they are set", () => {
