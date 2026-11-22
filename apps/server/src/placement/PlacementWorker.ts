@@ -12,6 +12,7 @@ import {
   placementEntryKey,
   placementMoveTarget,
   placementProfileOfTags,
+  placementSelectionOutOfUsage,
   placementWindows,
   sameEntry,
 } from "@t3tools/shared/placement";
@@ -380,7 +381,11 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
         thread.latestRunId === waiting.runId &&
         (thread.status === "interrupted" || thread.status === "failed")
       ) {
-        if (thread.status === "interrupted") {
+        // Compaction runs on the account being left, so it is skipped when that one is spent.
+        if (
+          thread.status === "interrupted" &&
+          !placementSelectionOutOfUsage(waiting.from, providers, book.sources, nowMs)
+        ) {
           const compactKey = `${thread.id}:${waiting.runId}`;
           const compacted = yield* threads
             .dispatch({

@@ -237,6 +237,17 @@ export function placementWindows(
   return modelUsageWindows(provider, selection.model);
 }
 
+/** Whether a window that limits this model is spent: a run on it fails at once. */
+export function placementSelectionOutOfUsage(
+  selection: ModelSelection,
+  providers: ReadonlyArray<ServerProvider>,
+  sources: ReadonlyArray<UsageLimitSourceSnapshot>,
+  now: number,
+) {
+  const reading = worst(placementWindows(selection, providers, sources, now) ?? [], now);
+  return reading !== undefined && reading.usedPercent >= 100;
+}
+
 export function placementWindowReadings(
   selection: ModelSelection,
   providers: ReadonlyArray<ServerProvider>,

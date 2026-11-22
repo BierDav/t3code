@@ -20,6 +20,7 @@ import {
   placementMoveTarget,
   placementPickSelection,
   placementProfileOfTags,
+  placementSelectionOutOfUsage,
   placementTag,
   rankPlacementProfile,
   usableHours,
@@ -262,6 +263,20 @@ describe("rankPlacementProfile", () => {
       ],
     });
     expect(decision.ranked[0]).toMatchObject({ state: "ok", session: { usedPercent: 0 } });
+  });
+});
+
+describe("placementSelectionOutOfUsage", () => {
+  it("is true while a window that limits the model is spent, until it resets", () => {
+    const sources = hub([
+      account("claude-david.json", david.model, windows(10, 100, 1)),
+      account("claude-1.json", one.model, windows(97, 20)),
+    ]);
+    expect(placementSelectionOutOfUsage(david, [provider], sources, now)).toBe(true);
+    expect(placementSelectionOutOfUsage(one, [provider], sources, now)).toBe(false);
+    expect(placementSelectionOutOfUsage(david, [provider], sources, now + 2 * 3_600_000)).toBe(
+      false,
+    );
   });
 });
 
