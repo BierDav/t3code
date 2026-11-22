@@ -178,11 +178,6 @@ function liveUsed(window: ServerProviderUsageWindow, now: number) {
   return Number.isFinite(reset) && reset <= now ? 0 : window.usedPercent;
 }
 
-function resetsWithinSession(window: ServerProviderUsageWindow, now: number) {
-  const reset = window.resetsAt === undefined ? NaN : Date.parse(window.resetsAt);
-  return Number.isFinite(reset) && reset - now <= SESSION_HOURS * 3_600_000;
-}
-
 function worst(
   windows: ReadonlyArray<ServerProviderUsageWindow>,
   now: number,
@@ -360,19 +355,21 @@ function decideEntry(entry: PlacementEntry, input: PlacementRankInput): Placemen
       reason: `Out of usage${all.resetsAt ? ` until ${all.resetsAt}` : ""}.`,
     };
   }
-  // The switch point leaves headroom before a limit. A weekly window that resets within one
-  // session window is the exception: its allowance is lost at the reset, so it is spent rather
-  // than kept (100% still stops).
-  const guarded = worst(
-    windows.filter((window) => window.kind !== "weekly" || !resetsWithinSession(window, input.now)),
-    input.now,
-  );
-  if (guarded !== undefined && guarded.usedPercent >= input.policy.switchAtPercent) {
+  // The switch point leaves headroom before the session limit, so a turn does not run into it.
+  // Within PLACEMENT_LIMIT_WAIT_MS of the reset it does not apply: the thread may hit the limit
+  // and waits for the reset instead, keeping its prompt cache (placementWaitsForReset). The weekly
+  // window has no switch point: what is left of it is spent, and only 100% stops.
+  const sessionReset = session?.resetsAt === undefined ? NaN : Date.parse(session.resetsAt);
+  if (
+    session !== undefined &&
+    session.usedPercent >= input.policy.switchAtPercent &&
+    !(Number.isFinite(sessionReset) && sessionReset - input.now <= PLACEMENT_LIMIT_WAIT_MS)
+  ) {
     return {
       ...base,
       ...readings,
       state: "over_threshold",
-      reason: `A limit is at ${percent(guarded.usedPercent)}, at or past the ${percent(input.policy.switchAtPercent)} switch point.`,
+      reason: `The session limit is at ${percent(session.usedPercent)}, at or past the ${percent(input.policy.switchAtPercent)} switch point.`,
     };
   }
 

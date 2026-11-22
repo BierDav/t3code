@@ -331,7 +331,7 @@ describe("Prism placement sync", () => {
             threadId: "thr-1",
             from: claude("claude-david/claude-opus-5-5"),
             to: claude("claude-1/claude-opus-5-5"),
-            reason: "A limit is at 96%, at or past the 95% switch point.",
+            reason: "The session limit is at 96%, at or past the 95% switch point.",
           },
         ],
       };
