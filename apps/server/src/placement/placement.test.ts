@@ -32,7 +32,7 @@ import {
 import { launchProfileId } from "./placementLaunch.ts";
 import { pickLeavesProfile, placementTagCommands } from "./placementPick.ts";
 import {
-  continuationText,
+  CONTINUATION_TEXT,
   makePlacementSweep,
   parentNoticeText,
   shortAccountLabel,
@@ -110,9 +110,7 @@ describe("move messages", () => {
   it("tell the moved thread and its parent what happened", () => {
     const from = claude("claude-david/x");
     const to = claude("claude-1/x");
-    expect(continuationText(from, to, "A limit is at 96%.")).toContain(
-      "moved from claude-david/x to claude-1/x: A limit is at 96%",
-    );
+    expect(CONTINUATION_TEXT).toBe("Continue where you left off.");
     expect(parentNoticeText("thread-1" as never, from, to, "A limit is at 96%.")).toContain(
       "no action is needed",
     );
@@ -376,6 +374,14 @@ describe("Prism placement sync", () => {
                 activeRunId: null,
               };
             }
+            if (cmd.type === "message.dispatch") {
+              // The compaction runs and finishes before the next tick.
+              currentThread = {
+                ...currentThread,
+                status: "completed",
+                latestRunId: `run-after-${dispatched.length}`,
+              } as typeof currentThread;
+            }
             return Effect.void;
           },
         } as unknown as ThreadManagement.ThreadManagementService["Service"]),
@@ -413,30 +419,33 @@ describe("Prism placement sync", () => {
         expect(requests[0]?.body.threads).toHaveLength(1);
         expect(dispatched.map((c) => (c as { type: string }).type)).toEqual(["run.interrupt"]);
 
-        // Sweep 2: compact on the original account after the interrupt.
-        fakeNow += 31_000;
+        // Next tick: compact on the original account after the interrupt, without waiting
+        // for the next Prism sync.
+        fakeNow += 5_000;
         yield* sweep();
-        expect(requests).toHaveLength(2);
+        expect(requests).toHaveLength(1);
         expect(dispatched[1]).toMatchObject({
           type: "message.dispatch",
           text: "/compact",
+          messageId: expect.stringMatching(/^placement-compact:/),
           modelSelection: prismResponse.moves?.[0]?.from,
         });
 
-        // Sweep 3: the compaction is no longer running, so continue on the target.
-        fakeNow += 31_000;
+        // Next tick: the compaction is no longer running, so continue on the target.
+        fakeNow += 5_000;
         yield* sweep();
-        expect(requests).toHaveLength(3);
+        expect(requests).toHaveLength(1);
         expect(dispatched[2]).toMatchObject({
           type: "message.dispatch",
+          text: CONTINUATION_TEXT,
           modelSelection: prismResponse.moves?.[0]?.to,
         });
 
-        // Sweep 4: acknowledge the completed move without applying it again.
+        // Next sync: acknowledge the completed move without applying it again.
         fakeNow += 31_000;
         yield* sweep();
-        expect(requests).toHaveLength(4);
-        expect(requests[3]?.body.moves).toEqual([
+        expect(requests).toHaveLength(2);
+        expect(requests[1]?.body.moves).toEqual([
           { id: "mac:thr-1:claude-1:1", state: "continued" },
         ]);
         expect(dispatched).toHaveLength(3);

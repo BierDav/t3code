@@ -25592,3 +25592,15 @@ describe("ClaudeAdapterV2 query message stream", () => {
     }),
   );
 });
+
+describe("claudeCompactCommand", () => {
+  it("tells Claude that a placement interrupt was not the user's stop", () => {
+    const command = ClaudeAdapterV2.claudeCompactCommand("placement-compact:thr-1:run-1");
+    assert.match(command, /^\/compact The last interruption came from T3 Code/);
+    assert.include(command, "not from the user");
+  });
+
+  it("leaves other compactions unchanged", () => {
+    assert.strictEqual(ClaudeAdapterV2.claudeCompactCommand("message-1"), "/compact");
+  });
+});
