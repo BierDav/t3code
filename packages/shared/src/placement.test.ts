@@ -170,6 +170,26 @@ describe("rankPlacementProfile", () => {
     expect(decision.ranked[1]).toMatchObject({ state: "ok", weeklySlackSessions: 4.2 });
   });
 
+  it("spends a weekly window past the switch point that resets within a session", () => {
+    const entries = [
+      { selection: one, enabled: true, sessionShareOfWeekly: 13.2 },
+      { selection: david, enabled: true, sessionShareOfWeekly: 13.7 },
+    ];
+    const at = (weekly: number, resetHours: number) =>
+      rank({
+        entries,
+        accounts: [
+          account("claude-1.json", one.model, windows(10, 20)),
+          account("claude-david.json", david.model, windows(10, weekly, resetHours)),
+        ],
+      });
+    expect(at(97, 1).next).toEqual(david);
+    expect(at(97, 1).ranked[0]).toMatchObject({ selection: david, state: "promoted" });
+    expect(at(97, 72).next).toEqual(one);
+    expect(at(97, 72).ranked[1]).toMatchObject({ selection: david, state: "over_threshold" });
+    expect(at(100, 1).next).toEqual(one);
+  });
+
   it("counts only active hours for the weekly rule when they are set", () => {
     expect(usableHours(now, now + 24 * 3_600_000)).toBe(24);
     const utc = DateTime.zoneMakeOffset(0);
@@ -316,6 +336,24 @@ describe("placement provider", () => {
       alex,
     );
     expect(placementPickSelection(null, undefined)).toBeNull();
+  });
+
+  it("displays a pending pick of another account as itself", () => {
+    const profiles = {
+      coding: profile([
+        { selection: david, enabled: true },
+        { selection: one, enabled: true },
+      ]),
+    };
+    const display = (selection: ModelSelection) =>
+      placementDisplaySelection({
+        selection,
+        tags: ["placement:coding"],
+        placementProfiles: profiles,
+        current: david,
+      });
+    expect(display(one)).toEqual(one);
+    expect(display(david)).toEqual({ instanceId: PLACEMENT_INSTANCE_ID, model: "coding" });
   });
 
   it("displays the profile while a tagged thread runs on one of its accounts", () => {

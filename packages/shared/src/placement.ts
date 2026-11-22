@@ -119,9 +119,14 @@ export function placementDisplaySelection(input: {
   readonly selection: ModelSelection;
   readonly tags: ReadonlyArray<string> | undefined;
   readonly placementProfiles: ServerSettings["placementProfiles"] | undefined;
+  /** The thread's own model: a pending pick of another one shows as itself, not the profile. */
+  readonly current?: ModelSelection | undefined;
 }): ModelSelection {
   const profileId = placementProfileOfTags(input.tags);
   if (profileId === null) return input.selection;
+  if (input.current !== undefined && !sameEntry(input.selection, input.current)) {
+    return input.selection;
+  }
   const profile = input.placementProfiles?.[profileId];
   if (!profile?.entries.some((entry) => sameEntry(entry.selection, input.selection))) {
     return input.selection;
@@ -170,6 +175,11 @@ interface Reading {
 function liveUsed(window: ServerProviderUsageWindow, now: number) {
   const reset = window.resetsAt === undefined ? NaN : Date.parse(window.resetsAt);
   return Number.isFinite(reset) && reset <= now ? 0 : window.usedPercent;
+}
+
+function resetsWithinSession(window: ServerProviderUsageWindow, now: number) {
+  const reset = window.resetsAt === undefined ? NaN : Date.parse(window.resetsAt);
+  return Number.isFinite(reset) && reset - now <= SESSION_HOURS * 3_600_000;
 }
 
 function worst(
@@ -338,12 +348,19 @@ function decideEntry(entry: PlacementEntry, input: PlacementRankInput): Placemen
       reason: `Out of usage${all.resetsAt ? ` until ${all.resetsAt}` : ""}.`,
     };
   }
-  if (all !== undefined && all.usedPercent >= input.policy.switchAtPercent) {
+  // The switch point leaves headroom before a limit. A weekly window that resets within one
+  // session window is the exception: its allowance is lost at the reset, so it is spent rather
+  // than kept (100% still stops).
+  const guarded = worst(
+    windows.filter((window) => window.kind !== "weekly" || !resetsWithinSession(window, input.now)),
+    input.now,
+  );
+  if (guarded !== undefined && guarded.usedPercent >= input.policy.switchAtPercent) {
     return {
       ...base,
       ...readings,
       state: "over_threshold",
-      reason: `A limit is at ${percent(all.usedPercent)}, at or past the ${percent(input.policy.switchAtPercent)} switch point.`,
+      reason: `A limit is at ${percent(guarded.usedPercent)}, at or past the ${percent(input.policy.switchAtPercent)} switch point.`,
     };
   }
 

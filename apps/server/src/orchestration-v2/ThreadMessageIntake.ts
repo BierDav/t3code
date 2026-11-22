@@ -20,6 +20,7 @@ import { decideProfile, PlacementBookRef } from "../placement/PlacementBook.ts";
 import {
   placementTagCommands,
   resolvePlacementPick,
+  pickLeavesProfile,
   staysInProfile,
 } from "../placement/placementPick.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
@@ -299,7 +300,7 @@ const withPlacementPick = Effect.fn("ThreadMessageIntake.withPlacementPick")(fun
   const nextProfile =
     picked !== null
       ? picked.profileId
-      : command.type === "thread.model-selection.set"
+      : pickLeavesProfile(command.type, requested, thread.modelSelection)
         ? null
         : profileId !== null && !(yield* staysInProfile(profileId, requested))
           ? null

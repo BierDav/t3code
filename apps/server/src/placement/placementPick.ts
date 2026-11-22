@@ -57,6 +57,19 @@ export const resolvePlacementPick = Effect.fn("placement.resolvePick")(function*
   return selection === null ? null : { profileId, selection };
 });
 
+/**
+ * Whether a client's model takes a thread out of its profile. A set is always an explicit pick.
+ * Clients send the composer's model with every message, so a message on the thread's own
+ * account keeps the profile and one on another model was picked.
+ */
+export function pickLeavesProfile(
+  command: "message.dispatch" | "thread.model-selection.set",
+  requested: ModelSelection,
+  current: ModelSelection,
+) {
+  return command === "thread.model-selection.set" || !sameEntry(requested, current);
+}
+
 /** Whether a selection keeps a thread in its profile: a pick, or one of the profile's accounts. */
 export const staysInProfile = Effect.fn("placement.staysInProfile")(function* (
   profileId: string,
