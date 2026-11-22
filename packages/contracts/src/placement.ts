@@ -72,6 +72,14 @@ export const PlacementPolicy = Schema.Struct({
   weeklySlackSessions: Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 20 })).pipe(
     Schema.withDecodingDefault(Effect.succeed(3)),
   ),
+  /**
+   * At most this many session windows of weekly slack, and Prism moves running threads onto the
+   * account; a thread that hits a limit then moves at once instead of waiting for a near reset.
+   * Absent: DEFAULT_WEEKLY_MOVE_SLACK_SESSIONS.
+   */
+  weeklyMoveSlackSessions: Schema.optional(
+    Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 20 })),
+  ),
   /** Hours in which session windows count as usable for the weekly rule. Absent: every hour. */
   activeHours: Schema.optional(PlacementActiveHours),
   /** `delegate_task` role to profile. A role not listed inherits the parent thread's profile. */
@@ -80,6 +88,8 @@ export const PlacementPolicy = Schema.Struct({
   ),
 });
 export type PlacementPolicy = typeof PlacementPolicy.Type;
+
+export const DEFAULT_WEEKLY_MOVE_SLACK_SESSIONS = 1.5;
 
 export const DEFAULT_PLACEMENT_POLICY: PlacementPolicy = {
   switchAtPercent: 95,

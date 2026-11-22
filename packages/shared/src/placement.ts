@@ -1,4 +1,5 @@
 import {
+  DEFAULT_WEEKLY_MOVE_SLACK_SESSIONS,
   isProviderAvailable,
   type ModelSelection,
   PLACEMENT_DRIVER_KIND,
@@ -448,6 +449,35 @@ export function rankPlacementProfile(input: PlacementRankInput): PlacementProfil
   const ranked = decided.map(({ decision }) => decision);
   const next = ranked.find((decision) => RUNNABLE.has(decision.state))?.selection ?? null;
   return { id: input.id, label: input.profile.label, next, ranked };
+}
+
+/** A usage limit that resets this soon after the failure is waited for on the same account. */
+export const PLACEMENT_LIMIT_WAIT_MS = 30 * 60_000;
+
+/**
+ * Whether a thread that failed on a usage limit waits for the reset on its own account, which
+ * keeps the provider's prompt cache, instead of moving: the limit resets within
+ * PLACEMENT_LIMIT_WAIT_MS of the failure and no other entry of the profile is about to waste
+ * its weekly allowance (slack at most weeklyMoveSlackSessions).
+ */
+export function placementWaitsForReset(input: {
+  readonly decision: PlacementProfileDecision;
+  readonly policy: PlacementPolicy;
+  readonly current: ModelSelection;
+  readonly failedAtMs: number;
+  readonly resetAtMs: number;
+}): boolean {
+  const { failedAtMs, resetAtMs } = input;
+  if (!Number.isFinite(resetAtMs) || resetAtMs <= failedAtMs) return false;
+  if (resetAtMs - failedAtMs > PLACEMENT_LIMIT_WAIT_MS) return false;
+  const limit = input.policy.weeklyMoveSlackSessions ?? DEFAULT_WEEKLY_MOVE_SLACK_SESSIONS;
+  return !input.decision.ranked.some(
+    (entry) =>
+      entry.state === "promoted" &&
+      entry.weeklySlackSessions !== undefined &&
+      entry.weeklySlackSessions <= limit &&
+      !sameEntry(entry.selection, input.current),
+  );
 }
 
 /**
