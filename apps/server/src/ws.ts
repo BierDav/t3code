@@ -3461,6 +3461,7 @@ export const layerWsRpc = (
               // Buffer changes through discovery and the initial snapshot's send.
               const keybindingsChanges = yield* keybindings.subscribeChanges;
               const settingsChanges = yield* serverSettings.subscribeChanges;
+              const placementChanges = yield* serverSettings.subscribeChanges;
               const remoteTargets = yield* Effect.forkScoped(remoteOpenTargets.resolveTargets(), {
                 startImmediately: true,
               });
@@ -3491,7 +3492,16 @@ export const layerWsRpc = (
                 // Seed the changes-only stream so early source refreshes pair with current providers.
                 Stream.concat(
                   Stream.fromEffect(providerRegistry.getProviders),
-                  providerRegistry.streamChanges,
+                  Stream.merge(
+                    providerRegistry.streamChanges,
+                    placementChanges.pipe(
+                      Stream.map((settings) => settings.placementProfiles),
+                      Stream.changesWith(
+                        (previous, next) => JSON.stringify(previous) === JSON.stringify(next),
+                      ),
+                      Stream.mapEffect(() => providerRegistry.getProviders),
+                    ),
+                  ),
                 ),
                 usageLimitSources.streamChanges.pipe(
                   Stream.changesWith(
