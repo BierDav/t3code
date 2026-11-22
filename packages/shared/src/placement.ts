@@ -119,9 +119,14 @@ export function placementDisplaySelection(input: {
   readonly selection: ModelSelection;
   readonly tags: ReadonlyArray<string> | undefined;
   readonly placementProfiles: ServerSettings["placementProfiles"] | undefined;
+  /** The thread's own model: a pending pick of another one shows as itself, not the profile. */
+  readonly current?: ModelSelection | undefined;
 }): ModelSelection {
   const profileId = placementProfileOfTags(input.tags);
   if (profileId === null) return input.selection;
+  if (input.current !== undefined && !sameEntry(input.selection, input.current)) {
+    return input.selection;
+  }
   const profile = input.placementProfiles?.[profileId];
   if (!profile?.entries.some((entry) => sameEntry(entry.selection, input.selection))) {
     return input.selection;

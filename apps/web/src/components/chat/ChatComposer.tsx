@@ -2507,6 +2507,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     selection: selectedModelSelection,
     tags: activeThread?.tags,
     placementProfiles: settings.placementProfiles,
+    current: activeThread?.modelSelection,
   });
   const pickerDisplayShowingProfile = pickerDisplaySelection.instanceId !== selectedInstanceId;
   const composerControls = (

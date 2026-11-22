@@ -30,7 +30,7 @@ import {
   REMOTE_DECISION_TTL_MS,
 } from "./PlacementBook.ts";
 import { launchProfileId } from "./placementLaunch.ts";
-import { placementTagCommands } from "./placementPick.ts";
+import { pickLeavesProfile, placementTagCommands } from "./placementPick.ts";
 import {
   continuationText,
   makePlacementSweep,
@@ -143,6 +143,27 @@ describe("placementTagCommands", () => {
         (command) => command.tagged,
       ),
     ).toEqual([false]);
+  });
+});
+
+describe("pickLeavesProfile", () => {
+  const david = claude("claude-david/claude-opus-5-5");
+  const one = claude("claude-1/claude-opus-5-5");
+
+  it("takes a thread out of its profile on an explicit pick, even of its own account", () => {
+    expect(pickLeavesProfile("thread.model-selection.set", david, david)).toBe(true);
+    expect(pickLeavesProfile("thread.model-selection.set", one, david)).toBe(true);
+    expect(pickLeavesProfile("message.dispatch", one, david)).toBe(true);
+  });
+
+  it("keeps the profile for a message on the thread's own account, whatever its options", () => {
+    expect(
+      pickLeavesProfile(
+        "message.dispatch",
+        { ...david, options: [{ id: "effort", value: "max" }] },
+        david,
+      ),
+    ).toBe(false);
   });
 });
 

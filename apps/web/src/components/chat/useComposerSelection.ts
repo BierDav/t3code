@@ -5,8 +5,10 @@ import type { Dispatch } from "react";
 import type { ComposerThreadTarget, DraftSessionState } from "../../composerDraftStore";
 import { useStableCallback } from "../../hooks/useStableCallback";
 import { useApplyThreadModelPick } from "./useApplyThreadModelPick";
+import { placementProfileOfTags } from "@t3tools/shared/placement";
 import {
   type EnvironmentId,
+  isPlacementPick,
   type ModelSelection,
   ProviderInstanceId,
   type ServerProvider,
@@ -182,9 +184,14 @@ export function useComposerSelection(input: ComposerSelectionInput) {
       activeThread.modelSelection.instanceId;
     const shownSelection =
       draft?.modelSelectionByProvider[shownInstanceId] ?? activeThread.modelSelection;
+    // In a placement profile the picker shows the profile, not its account: picking that
+    // account is an explicit pick, which takes the thread out of the profile.
+    const inProfile =
+      placementProfileOfTags(activeThread.tags) !== null && !isPlacementPick({ instanceId });
     if (
       !resolvedModel ||
-      (instanceId === shownInstanceId &&
+      (!inProfile &&
+        instanceId === shownInstanceId &&
         shownSelection.instanceId === instanceId &&
         shownSelection.model === resolvedModel)
     ) {

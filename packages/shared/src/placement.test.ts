@@ -338,6 +338,24 @@ describe("placement provider", () => {
     expect(placementPickSelection(null, undefined)).toBeNull();
   });
 
+  it("displays a pending pick of another account as itself", () => {
+    const profiles = {
+      coding: profile([
+        { selection: david, enabled: true },
+        { selection: one, enabled: true },
+      ]),
+    };
+    const display = (selection: ModelSelection) =>
+      placementDisplaySelection({
+        selection,
+        tags: ["placement:coding"],
+        placementProfiles: profiles,
+        current: david,
+      });
+    expect(display(one)).toEqual(one);
+    expect(display(david)).toEqual({ instanceId: PLACEMENT_INSTANCE_ID, model: "coding" });
+  });
+
   it("displays the profile while a tagged thread runs on one of its accounts", () => {
     const profiles = {
       coding: profile([
