@@ -1454,6 +1454,9 @@ export const ServerSettings = Schema.Struct({
   ),
   /** Ordered model lists a thread tagged `placement:<id>` is scheduled across. */
   placementProfiles: PlacementProfiles.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  autoFavoritePlacementProfiles: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
   placementPolicy: PlacementPolicy.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PLACEMENT_POLICY)),
   ),
@@ -1916,6 +1919,7 @@ export const ServerSettingsPatch = Schema.Struct({
   fallbackModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   fallbackToAvailableAccounts: Schema.optionalKey(Schema.Boolean),
   placementProfiles: Schema.optionalKey(PlacementProfiles),
+  autoFavoritePlacementProfiles: Schema.optionalKey(Schema.Boolean),
   placementPolicy: Schema.optionalKey(PlacementPolicy),
   placementSource: Schema.optionalKey(Schema.NullOr(PlacementSourceConfig)),
   /** Replaces each project's override set; null removes it. Omitted providerInstances retains its stored value. */

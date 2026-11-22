@@ -682,6 +682,21 @@ function foldLegacyProjectSettings(
   };
 }
 
+// Placement favorites follow the current profile IDs, without writing them to disk.
+function withPlacementFavorites(settings: ServerSettings): ServerSettings {
+  if (!settings.autoFavoritePlacementProfiles) return settings;
+  return {
+    ...settings,
+    favorites: [
+      ...(settings.favorites ?? []).filter(({ provider }) => provider !== PLACEMENT_INSTANCE_ID),
+      ...Object.keys(settings.placementProfiles).map((model) => ({
+        provider: PLACEMENT_INSTANCE_ID,
+        model,
+      })),
+    ],
+  };
+}
+
 const make = Effect.gen(function* () {
   const { settingsPath } = yield* ServerConfig.ServerConfig;
   const fs = yield* FileSystem.FileSystem;
@@ -696,7 +711,7 @@ const make = Effect.gen(function* () {
   // Locks are laid over every settings value that leaves this service, never persisted.
   const toEffective = (settings: ServerSettings) =>
     resolveTextGenerationProvider(
-      managedProviders.applyLimits(managed.applyLocks(settings)),
+      withPlacementFavorites(managedProviders.applyLimits(managed.applyLocks(settings))),
       managedProviders.isDriverAllowed,
     );
   const writeSemaphore = yield* Semaphore.make(1);
