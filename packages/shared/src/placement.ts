@@ -449,7 +449,7 @@ export function rankPlacementProfile(input: PlacementRankInput): PlacementProfil
 }
 
 /** A usage limit that resets this soon after the failure is waited for on the same account. */
-export const PLACEMENT_LIMIT_WAIT_MS = 30 * 60_000;
+const PLACEMENT_LIMIT_WAIT_MS = 30 * 60_000;
 
 /**
  * Whether a thread that failed on a usage limit waits for the reset on its own account, which

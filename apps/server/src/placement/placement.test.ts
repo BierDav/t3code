@@ -37,7 +37,11 @@ import {
   parentNoticeText,
   shortAccountLabel,
 } from "./PlacementWorker.ts";
-import type { PrismSyncRequest, PrismSyncResponse } from "./prismSync.ts";
+import {
+  buildPrismSyncRequest,
+  type PrismSyncRequest,
+  type PrismSyncResponse,
+} from "./prismSync.ts";
 
 const claude = (model: string) => ({ instanceId: ProviderInstanceId.make("claudeAgent"), model });
 
@@ -218,6 +222,35 @@ describe("Prism placement sync", () => {
     slashCommands: [],
     skills: [],
   };
+
+  it("reports picker visibility without removing models used for placement", () => {
+    const [builtIn, custom] = provider.models;
+    const request = buildPrismSyncRequest({
+      environmentId: "test",
+      providers: [{ ...provider, models: [builtIn!, { ...custom!, isCustom: true }] }],
+      settings: {
+        ...settings,
+        providerModelPreferences: {
+          [provider.instanceId]: {
+            hiddenModels: [builtIn!.slug, custom!.slug],
+            modelOrder: [],
+          },
+        },
+      },
+      threads: [],
+      sources: [],
+      isLive: () => false,
+      moves: [],
+      nowMs: 0,
+    });
+    expect(request.models).toHaveLength(2);
+    expect(request.models[0]).toMatchObject({
+      hidden: true,
+      driver: "claudeAgent",
+      provider: "Claude",
+    });
+    expect(request.models[1]).not.toHaveProperty("hidden");
+  });
 
   it("uses Prism's remote decision while fresh and falls back to local ranking when stale", () => {
     const book = makePlacementBook();

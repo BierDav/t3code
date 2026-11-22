@@ -44,6 +44,9 @@ export interface PrismSyncModel {
   readonly instanceId: string;
   readonly model: string;
   readonly label: string;
+  readonly driver?: string;
+  readonly provider?: string;
+  readonly hidden?: boolean;
   readonly reasoning?:
     | {
         readonly optionId: string;
@@ -128,6 +131,10 @@ export function buildPrismSyncRequest(input: {
   const models: PrismSyncModel[] = [];
   for (const provider of input.providers) {
     if (!provider.enabled || provider.instanceId === PLACEMENT_INSTANCE_ID) continue;
+    const hidden = new Set(
+      input.settings.providerModelPreferences?.[provider.instanceId]?.hiddenModels,
+    );
+    const displayName = provider.displayName;
     for (const model of provider.models) {
       const selection: ModelSelection = { instanceId: provider.instanceId, model: model.slug };
       const reasoning = extractReasoning(model);
@@ -145,6 +152,9 @@ export function buildPrismSyncRequest(input: {
         instanceId: provider.instanceId,
         model: model.slug,
         label: model.name,
+        driver: provider.driver,
+        ...(displayName ? { provider: displayName } : {}),
+        ...(!model.isCustom && hidden.has(model.slug) ? { hidden: true } : {}),
         ...(reasoning === undefined ? {} : { reasoning }),
         blocked,
         ...(readings.session === undefined ? {} : { session: readings.session }),
