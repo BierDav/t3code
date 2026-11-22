@@ -20,6 +20,8 @@ import {
   placementMoveTarget,
   placementPickSelection,
   placementProfileOfTags,
+  placementSelectionOutOfUsage,
+  placementWaitsForReset,
   placementTag,
   rankPlacementProfile,
   usableHours,
@@ -262,6 +264,55 @@ describe("rankPlacementProfile", () => {
       ],
     });
     expect(decision.ranked[0]).toMatchObject({ state: "ok", session: { usedPercent: 0 } });
+  });
+});
+
+describe("placementWaitsForReset", () => {
+  const decision = (davidSlack: number) => ({
+    id: "coding",
+    label: "Coding",
+    next: david,
+    ranked: [
+      {
+        selection: david,
+        state: "promoted" as const,
+        reason: "",
+        runningThreads: 0,
+        weeklySlackSessions: davidSlack,
+      },
+      { selection: one, state: "exhausted" as const, reason: "", runningThreads: 0 },
+    ],
+  });
+  const waits = (davidSlack: number, resetMinutes: number) =>
+    placementWaitsForReset({
+      decision: decision(davidSlack),
+      policy: DEFAULT_PLACEMENT_POLICY,
+      current: one,
+      failedAtMs: now,
+      resetAtMs: now + resetMinutes * 60_000,
+    });
+
+  it("waits for a limit that resets within 30 minutes while no account is urgent", () => {
+    expect(waits(2.5, 20)).toBe(true);
+    expect(waits(2.5, 45)).toBe(false);
+  });
+
+  it("moves at once when another account would waste its weekly allowance", () => {
+    expect(waits(1, 20)).toBe(false);
+  });
+});
+
+describe("placementSelectionOutOfUsage", () => {
+  it("is true while a window that limits the model is spent, until it resets", () => {
+    const sources = hub([
+      account("claude-david.json", david.model, windows(10, 100, 1)),
+      account("claude-1.json", one.model, windows(97, 20)),
+    ]);
+    expect(placementSelectionOutOfUsage(david, [provider], sources, now)).toBe(true);
+    expect(placementSelectionOutOfUsage(one, [provider], sources, now)).toBe(false);
+    expect(placementSelectionOutOfUsage(david, [provider], sources, now + 2 * 3_600_000)).toBe(
+      false,
+    );
   });
 });
 

@@ -12,6 +12,8 @@ import {
   placementEntryKey,
   placementMoveTarget,
   placementProfileOfTags,
+  placementSelectionOutOfUsage,
+  placementWaitsForReset,
   placementWindows,
   sameEntry,
 } from "@t3tools/shared/placement";
@@ -380,7 +382,11 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
         thread.latestRunId === waiting.runId &&
         (thread.status === "interrupted" || thread.status === "failed")
       ) {
-        if (thread.status === "interrupted") {
+        // Compaction runs on the account being left, so it is skipped when that one is spent.
+        if (
+          thread.status === "interrupted" &&
+          !placementSelectionOutOfUsage(waiting.from, providers, book.sources, nowMs)
+        ) {
           const compactKey = `${thread.id}:${waiting.runId}`;
           const compacted = yield* threads
             .dispatch({
@@ -487,6 +493,35 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
           thread.latestRunId !== null &&
           thread.pendingRuntimeRequest === null
         ) {
+          const profileId = placementProfileOfTags(thread.tags);
+          const decision =
+            profileId === null
+              ? null
+              : decideProfile(book, {
+                  profileId,
+                  settings: activeSettings,
+                  providers,
+                  now: nowMs,
+                  projectId: thread.projectId,
+                });
+          if (
+            decision !== null &&
+            placementWaitsForReset({
+              decision,
+              policy: activeSettings.placementPolicy,
+              current: thread.modelSelection,
+              failedAtMs: DateTime.toEpochMillis(thread.latestRunCompletedAt ?? thread.updatedAt),
+              resetAtMs: Date.parse(thread.usageLimitResetAt ?? ""),
+            })
+          ) {
+            // The local loop below resumes it on its own account once the limit resets.
+            pendingAcks.push({
+              id: prismMove.id,
+              state: "failed",
+              detail: "waits for its usage limit to reset on the same account",
+            });
+            continue;
+          }
           // The local usage-limit continuation below must not continue it a second time.
           handledFailures.add(`${thread.id}:${thread.latestRunId}`);
           yield* continueOn(thread, {
@@ -574,6 +609,49 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
         projectId: thread.projectId,
       });
       if (decision === null) continue;
+
+      // A limit that resets soon is waited for on the same account, which keeps its prompt
+      // cache, unless another account must take work before its weekly allowance is wasted.
+      if (
+        !isLive(thread) &&
+        thread.status === "failed" &&
+        thread.lastErrorClass === "usage_limit" &&
+        thread.latestRunId !== null &&
+        thread.pendingRuntimeRequest === null &&
+        placementWaitsForReset({
+          decision,
+          policy: activeSettings.placementPolicy,
+          current: thread.modelSelection,
+          failedAtMs: DateTime.toEpochMillis(thread.latestRunCompletedAt ?? thread.updatedAt),
+          resetAtMs: Date.parse(thread.usageLimitResetAt ?? ""),
+        })
+      ) {
+        const resetAtMs = Date.parse(thread.usageLimitResetAt ?? "");
+        if (nowMs < resetAtMs || nowMs - resetAtMs > LIMIT_FAILURE_WINDOW_MS) continue;
+        const failureKey = `${thread.id}:${thread.latestRunId}`;
+        if (handledFailures.has(failureKey)) continue;
+        handledFailures.add(failureKey);
+        yield* threads
+          .dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(`placement-resume:${failureKey}`),
+            messageId: MessageId.make(`placement-resume:${failureKey}`),
+            threadId: thread.id,
+            usageLimitContinuationOfRunId: thread.latestRunId,
+            modelSelection: thread.modelSelection,
+            text: "Continue where you left off. Your usage limit has reset.",
+            attachments: [],
+            dispatchMode: { type: "start_immediately" },
+            createdBy: "user",
+            creationSource: "server",
+          })
+          .pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("placement.limit-resume-failed", { threadId: thread.id, cause }),
+            ),
+          );
+        continue;
+      }
 
       // A run that just failed on a usage limit continues on the next account straight away.
       if (
