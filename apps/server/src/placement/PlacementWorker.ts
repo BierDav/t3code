@@ -28,6 +28,7 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import { queuedRunsInDeliveryOrder } from "../orchestration-v2/QueuedRunOrder.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
@@ -75,7 +76,14 @@ export function shortAccountLabel(selection: ModelSelection) {
   return slash > 0 ? selection.model.slice(0, slash) : selection.model;
 }
 
+/** A move onto the account the thread is on: compact there and keep going (Prism asks it before a limit the account runs into on purpose). */
+const inPlace = (move: { readonly from: ModelSelection; readonly to: ModelSelection }) =>
+  sameEntry(move.from, move.to);
+
 export function continuationText(from: ModelSelection, to: ModelSelection, reason: string) {
+  if (inPlace({ from, to })) {
+    return `Continue where you left off. Placement compacted this thread on ${label(to)}: ${reason.replace(/\.$/, "")}. Your earlier progress is above; check what the last step finished before you repeat it.`;
+  }
   return `Continue where you left off. Your work moved from ${label(from)} to ${label(to)}: ${reason.replace(/\.$/, "")}. Your earlier progress is above; check what the last step finished before you repeat it.`;
 }
 
@@ -88,9 +96,15 @@ export function parentNoticeText(
   return `Placement moved delegated thread ${child} from ${label(from)} to ${label(to)} (${reason.replace(/\.$/, "")}). It continues on its own with its context handed over; no action is needed. Its result arrives as usual.`;
 }
 
-const isLive = (thread: OrchestrationV2ThreadShell) =>
-  thread.activeRunId !== null &&
-  (thread.status === "running" || thread.status === "starting" || thread.status === "waiting");
+// The shell's status is its newest unheld run's: a message queued behind the active run takes it
+// over while that run still works. The active run's own status says whether it is live.
+const isLive = (thread: OrchestrationV2ThreadShell) => {
+  const status = thread.activityRunStatus ?? thread.status;
+  return (
+    thread.activeRunId !== null &&
+    (status === "running" || status === "starting" || status === "waiting")
+  );
+};
 
 function profileThreadFingerprint(threads: ReadonlyArray<OrchestrationV2ThreadShell>): string {
   const parts: string[] = [];
@@ -158,7 +172,9 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
               parentItemId: null,
               ordinal: 0,
               status: "completed",
-              title: `${shortAccountLabel(move.from)} → ${shortAccountLabel(move.to)}`,
+              title: inPlace(move)
+                ? `Compacted on ${shortAccountLabel(move.to)}`
+                : `${shortAccountLabel(move.from)} → ${shortAccountLabel(move.to)}`,
               startedAt: now,
               completedAt: now,
               updatedAt: now,
@@ -180,6 +196,7 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
     move: Omit<PendingMove, "stage" | "compactRunId">,
   ) {
     const parentId = thread.lineage.parentThreadId;
+    if (inPlace(move)) return;
     if (parentId === null || thread.lineage.relationshipToParent !== "subagent") return;
     const parent = yield* projections.getThreadRecords(parentId, ["subagents"]);
     const task = parent.subagents.find(
@@ -232,6 +249,110 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
         Effect.logWarning("placement.parent-notice-failed", { threadId: thread.id, cause }),
       ),
     );
+  });
+
+  // Queue the compaction and continuation before interrupting so user messages
+  // already queued follow the continuation onto the new account.
+  const startMove = Effect.fnUntraced(function* (
+    thread: OrchestrationV2ThreadShell,
+    move: PendingMove,
+    compactOnFrom: boolean,
+  ) {
+    const interrupt = threads
+      .dispatch({
+        type: "run.interrupt",
+        commandId: CommandId.make(`placement-interrupt:${thread.id}:${move.runId}`),
+        threadId: thread.id,
+        runId: move.runId,
+        reason: inPlace(move)
+          ? `Placement: compacting before the limit. ${move.reason}`
+          : `Placement: moving to ${label(move.to)}. ${move.reason}`,
+      })
+      .pipe(
+        Effect.as(true),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("placement.interrupt-failed", { threadId: thread.id, cause }).pipe(
+            Effect.as(false),
+          ),
+        ),
+      );
+    const queued = yield* projections.getThreadRecords(thread.id, ["runs", "messages"]).pipe(
+      Effect.map(queuedRunsInDeliveryOrder),
+      Effect.orElseSucceed(() => []),
+    );
+    if (queued.length === 0) {
+      if (!(yield* interrupt)) return false;
+      pending.set(thread.id, move);
+      recordMove(book, { threadId: thread.id, ...move, state: "interrupting" });
+      return true;
+    }
+
+    const key = `${thread.id}:${move.runId}`;
+    const ahead = [
+      ...(compactOnFrom
+        ? [
+            {
+              messageId: MessageId.make(`placement-compact:${key}`),
+              modelSelection: move.from,
+              text: "/compact",
+            },
+          ]
+        : []),
+      {
+        messageId: MessageId.make(`placement-move:${key}`),
+        modelSelection: move.to,
+        text: continuationText(move.from, move.to, move.reason),
+      },
+    ];
+    for (const message of ahead) {
+      yield* threads.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(message.messageId),
+        threadId: thread.id,
+        ...message,
+        attachments: [],
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "user",
+        creationSource: "server",
+      });
+    }
+    const runs = (yield* projections.getThreadRecords(thread.id, ["runs"])).runs;
+    for (const message of ahead) {
+      const run = runs.find(
+        (candidate) =>
+          candidate.userMessageId === message.messageId && candidate.status === "queued",
+      );
+      if (run === undefined) continue;
+      // Ahead of the first queued message that may be passed (completions may not be).
+      for (const before of queued) {
+        const placed = yield* threads
+          .dispatch({
+            type: "queued-run.reorder",
+            commandId: CommandId.make(`placement-reorder:${message.messageId}`),
+            threadId: thread.id,
+            runId: run.id,
+            beforeRunId: before.id,
+          })
+          .pipe(
+            Effect.as(true),
+            Effect.catchCause(() => Effect.succeed(false)),
+          );
+        if (placed) break;
+      }
+    }
+    yield* interrupt;
+    // The queue carries the move from here; there is nothing left to wait for.
+    recordMove(book, { threadId: thread.id, ...move, state: "continued" });
+    if (move.prismMoveId !== undefined) {
+      pendingAcks.push({ id: move.prismMoveId, state: "continued" });
+    }
+    yield* recordMoveNotice(thread, move);
+    yield* notifyParent(thread, move).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("placement.parent-notice-failed", { threadId: thread.id, cause }),
+      ),
+    );
+    return true;
   });
 
   return Effect.fn("PlacementWorker.sweep")(function* () {
@@ -464,29 +585,23 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
             prismMoveId: prismMove.id,
             stage: "interrupting",
           };
-          const interrupted = yield* threads
-            .dispatch({
-              type: "run.interrupt",
-              commandId: CommandId.make(`placement-interrupt:${thread.id}:${move.runId}`),
-              threadId: thread.id,
-              runId: move.runId,
-              reason: `Placement: moving to ${label(move.to)}. ${move.reason}`,
-            })
-            .pipe(
-              Effect.as(true),
-              Effect.catchCause((cause) =>
-                Effect.logWarning("placement.interrupt-failed", {
-                  threadId: thread.id,
-                  cause,
-                }).pipe(Effect.as(false)),
+          const started = yield* startMove(
+            thread,
+            move,
+            !placementSelectionOutOfUsage(move.from, providers, book.sources, nowMs),
+          ).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("placement.move-start-failed", { threadId: thread.id, cause }).pipe(
+                Effect.as(false),
               ),
-            );
-          if (!interrupted) {
+            ),
+          );
+          if (!started) {
             pendingAcks.push({ id: prismMove.id, state: "failed", detail: "interrupt failed" });
-            continue;
           }
-          pending.set(thread.id, move);
-          recordMove(book, { threadId: thread.id, ...move, state: "interrupting" });
+        } else if (inPlace(prismMove)) {
+          // Nothing runs to compact before the limit; the thread stays where it is.
+          pendingAcks.push({ id: prismMove.id, state: "failed", detail: "the thread is idle" });
         } else if (
           thread.status === "failed" &&
           thread.lastErrorClass === "usage_limit" &&
@@ -704,25 +819,15 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
         startedMs: nowMs,
         stage: "interrupting",
       };
-      const interrupted = yield* threads
-        .dispatch({
-          type: "run.interrupt",
-          commandId: CommandId.make(`placement-interrupt:${thread.id}:${move.runId}`),
-          threadId: thread.id,
-          runId: move.runId,
-          reason: `Placement: moving to ${label(move.to)}. ${move.reason}`,
-        })
-        .pipe(
-          Effect.as(true),
-          Effect.catchCause((cause) =>
-            Effect.logWarning("placement.interrupt-failed", { threadId: thread.id, cause }).pipe(
-              Effect.as(false),
-            ),
-          ),
-        );
-      if (!interrupted) continue;
-      pending.set(thread.id, move);
-      recordMove(book, { threadId: thread.id, ...move, state: "interrupting" });
+      yield* startMove(
+        thread,
+        move,
+        !placementSelectionOutOfUsage(move.from, providers, book.sources, nowMs),
+      ).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("placement.move-start-failed", { threadId: thread.id, cause }),
+        ),
+      );
     }
   });
 });
