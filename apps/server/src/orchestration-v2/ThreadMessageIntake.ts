@@ -7,7 +7,11 @@ import {
   type OrchestrationV2Command,
   type ProjectId,
 } from "@t3tools/contracts";
-import { placementMoveTarget, placementProfileOfTags } from "@t3tools/shared/placement";
+import {
+  placementMoveTarget,
+  placementProfileOfTags,
+  sameSelection,
+} from "@t3tools/shared/placement";
 import { availableAccountSelection } from "@t3tools/shared/usageLimits";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -226,6 +230,17 @@ const withAvailableAccount = Effect.fn("ThreadMessageIntake.withAvailableAccount
   const next = placed.inProfile
     ? (placed.selection ?? selection)
     : choose!(selection, thread.projectId);
+  // Clients send the composer's model with every message. In a profile thread that is the
+  // thread's own account, and a copy of it would pin a queued message there: when placement
+  // moves the thread before the message starts, it would still run on the account left.
+  if (
+    placed.inProfile &&
+    command.modelSelection !== undefined &&
+    sameSelection(next, thread.modelSelection)
+  ) {
+    const { modelSelection: _ownAccount, ...followsThread } = command;
+    return { command: followsThread, fallback: undefined };
+  }
   return {
     command: next === selection ? command : { ...command, modelSelection: next },
     fallback:

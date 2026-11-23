@@ -398,6 +398,7 @@ describe("Prism placement sync", () => {
         } as unknown as UsageLimitSources.UsageLimitSources["Service"]),
         Layer.succeed(ProjectionStore.ProjectionStoreV2, {
           getShellSnapshot: () => Effect.succeed({ threads: [currentThread] }),
+          getThreadRecords: () => Effect.succeed({ runs: [], messages: [] }),
         } as unknown as ProjectionStore.ProjectionStoreV2["Service"]),
         Layer.succeed(ThreadManagement.ThreadManagementService, {
           dispatch: (cmd: { readonly type: string }) => {
@@ -584,5 +585,184 @@ describe("Prism placement sync", () => {
       yield* sweep();
       expect(dispatched.filter((c) => c.type === "message.dispatch")).toHaveLength(1);
     }).pipe(Effect.provide(layer), Effect.provideService(PlacementBookRef, makePlacementBook()));
+  });
+
+  /** One Prism sync against a thread whose run is live, with `queued` runs behind it. */
+  const sweepOnce = (input: {
+    readonly thread: OrchestrationV2ThreadShell;
+    readonly move: NonNullable<PrismSyncResponse["moves"]>[number];
+    readonly queued: ReadonlyArray<{ readonly id: string; readonly userMessageId: string }>;
+  }) => {
+    const dispatched: Array<Record<string, unknown> & { readonly type: string }> = [];
+    let runs: Array<Record<string, unknown>> = input.queued.map((run, index) => ({
+      ...run,
+      status: "queued",
+      ordinal: 10 + index,
+      queuePosition: index + 1,
+      requestedAt: DateTime.makeUnsafe("2026-11-21T18:00:00.000Z"),
+    }));
+    const response: PrismSyncResponse = {
+      v: 1,
+      checkedAt: "2026-11-21T18:20:00Z",
+      profiles: [
+        {
+          id: "coding",
+          label: "Coding",
+          entries: [
+            { selection: claude("claude-david/claude-opus-5-5"), enabled: true },
+            { selection: claude("claude-1/claude-opus-5-5"), enabled: true },
+          ],
+          next: claude("claude-1/claude-opus-5-5"),
+          ranked: [],
+        },
+      ],
+      moves: [input.move],
+    };
+    const layer = Layer.mergeAll(
+      ServerSettingsService.layerTest({
+        placementSource: { url: "https://prism.example.test", tokenFile: "/t", enabled: true },
+      }),
+      Layer.succeed(ProviderRegistry.ProviderRegistry, {
+        getProviders: Effect.succeed([provider]),
+      } as unknown as ProviderRegistry.ProviderRegistry["Service"]),
+      Layer.succeed(UsageLimitSources.UsageLimitSources, {
+        current: Effect.succeed([]),
+      } as unknown as UsageLimitSources.UsageLimitSources["Service"]),
+      Layer.succeed(ProjectionStore.ProjectionStoreV2, {
+        getShellSnapshot: () => Effect.succeed({ threads: [input.thread] }),
+        getThreadRecords: () => Effect.sync(() => ({ runs, messages: [] })),
+      } as unknown as ProjectionStore.ProjectionStoreV2["Service"]),
+      Layer.succeed(ThreadManagement.ThreadManagementService, {
+        dispatch: (cmd: Record<string, unknown> & { readonly type: string }) =>
+          Effect.sync(() => {
+            dispatched.push(cmd);
+            const mode = cmd.dispatchMode as { readonly type: string } | undefined;
+            if (cmd.type === "message.dispatch" && mode?.type === "queue_after_active") {
+              runs = [
+                ...runs,
+                {
+                  id: `run-for-${String(cmd.messageId)}`,
+                  userMessageId: cmd.messageId,
+                  status: "queued",
+                  ordinal: 10 + runs.length,
+                  queuePosition: runs.length + 1,
+                  requestedAt: DateTime.makeUnsafe("2026-11-21T18:30:00.000Z"),
+                },
+              ];
+            }
+          }),
+      } as unknown as ThreadManagement.ThreadManagementService["Service"]),
+      Layer.succeed(Orchestrator.OrchestratorV2, {
+        dispatch: () => Effect.void,
+      } as unknown as Orchestrator.OrchestratorV2["Service"]),
+      Layer.succeed(FileSystem.FileSystem, {
+        readFileString: () => Effect.succeed("token"),
+      } as unknown as FileSystem.FileSystem),
+    );
+    return Effect.gen(function* () {
+      const sweep = yield* makePlacementSweep({
+        fetchImpl: async () =>
+          new Response(JSON.stringify(response), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
+        nowMs: () => 1_000_000,
+      });
+      yield* sweep();
+      return dispatched;
+    }).pipe(Effect.provide(layer), Effect.provideService(PlacementBookRef, makePlacementBook()));
+  };
+
+  const liveThread = (overrides: Record<string, unknown>) =>
+    ({
+      id: ThreadId.make("thr-q"),
+      projectId: "proj-1" as never,
+      title: "Long task",
+      modelSelection: claude("claude-david/claude-opus-5-5"),
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      status: "running",
+      activityRunStatus: "running",
+      activeRunId: RunId.make("run-active"),
+      latestRunId: RunId.make("run-active"),
+      latestRunCompletedAt: null,
+      lastErrorClass: null,
+      pendingRuntimeRequest: null,
+      tags: ["placement:coding"],
+      archivedAt: null,
+      updatedAt: DateTime.makeUnsafe("2026-11-21T18:00:00.000Z"),
+      lineage: { parentThreadId: null, relationshipToParent: null },
+      ...overrides,
+    }) as unknown as OrchestrationV2ThreadShell;
+
+  it.effect("moves a running thread with messages queued behind it ahead of the queue", () =>
+    Effect.gen(function* () {
+      // The queued follow-up is the shell's newest run, so its status is "queued"; the
+      // active run is still working.
+      const dispatched = yield* sweepOnce({
+        thread: liveThread({ status: "queued", latestRunId: RunId.make("run-queued") }),
+        move: {
+          id: "mac:thr-q:claude-1:1",
+          threadId: "thr-q",
+          from: claude("claude-david/claude-opus-5-5"),
+          to: claude("claude-1/claude-opus-5-5"),
+          reason: "The session limit is at 96%, at or past the 95% switch point.",
+        },
+        queued: [{ id: "run-queued", userMessageId: "msg-user" }],
+      });
+      expect(dispatched.map((cmd) => cmd.type)).toEqual([
+        "message.dispatch",
+        "message.dispatch",
+        "queued-run.reorder",
+        "queued-run.reorder",
+        "run.interrupt",
+      ]);
+      expect(dispatched[0]).toMatchObject({
+        text: "/compact",
+        modelSelection: claude("claude-david/claude-opus-5-5"),
+        dispatchMode: { type: "queue_after_active" },
+      });
+      expect(dispatched[1]).toMatchObject({
+        modelSelection: claude("claude-1/claude-opus-5-5"),
+        dispatchMode: { type: "queue_after_active" },
+      });
+      // Both go ahead of the queued message, the compaction first.
+      expect(dispatched[2]).toMatchObject({
+        runId: "run-for-placement-compact:thr-q:run-active",
+        beforeRunId: "run-queued",
+      });
+      expect(dispatched[3]).toMatchObject({
+        runId: "run-for-placement-move:thr-q:run-active",
+        beforeRunId: "run-queued",
+      });
+      expect(dispatched[4]).toMatchObject({ runId: "run-active" });
+    }),
+  );
+
+  it.effect(
+    "compacts in place, without a parent notice, when Prism moves a thread onto its own account",
+    () =>
+      Effect.gen(function* () {
+        const dispatched = yield* sweepOnce({
+          thread: liveThread({}),
+          move: {
+            id: "mac:thr-q:claude-david:1",
+            threadId: "thr-q",
+            from: claude("claude-david/claude-opus-5-5"),
+            to: claude("claude-david/claude-opus-5-5"),
+            reason: "Compacting before the limit, to hand over a short context when it is reached.",
+          },
+          queued: [],
+        });
+        expect(dispatched.map((cmd) => cmd.type)).toEqual(["run.interrupt"]);
+        expect(String(dispatched[0]?.reason)).toContain("compacting before the limit");
+      }),
+  );
+
+  it("words an in-place continuation as a compaction", () => {
+    const david = claude("claude-david/claude-opus-5-5");
+    expect(continuationText(david, david, "Close to the limit.")).toContain(
+      "Placement compacted this thread on claude-david/claude-opus-5-5: Close to the limit",
+    );
   });
 });
