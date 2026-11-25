@@ -365,13 +365,10 @@ export const makeAntigravityUsageProbe = Effect.fn("makeAntigravityUsageProbe")(
         : input.authMethod === "oauth-business"
           ? yield* readKeyringSecret
           : undefined;
-      if (stored === undefined) {
-        return makeUnavailableUsageLimits({
-          checkedAt,
-          reason: "unsupported",
-          message: "Sign in with Google to see Antigravity limits.",
-        });
-      }
+      // The provider status already asks for a sign-in; a runtime authenticated another way
+      // (such as through a gateway) has no Google limits to show.
+      if (stored === undefined)
+        return makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" });
       const { token } = yield* decodeCliToken(stored);
       if (!(Date.parse(token.expiry ?? "") > now + 60_000)) {
         return makeUnavailableUsageLimits({
