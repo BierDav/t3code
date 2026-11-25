@@ -143,12 +143,13 @@ import { WITHHELD, withoutWebhookUrlToken } from "../scheduledTasks/webhookUrlTo
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
-import { placementProfileOfTags, placementTag } from "@t3tools/shared/placement";
+import { placementProfileOfTags } from "@t3tools/shared/placement";
 import {
   launchProfileId,
   launchSelection,
   placementCapabilities,
 } from "../placement/placementLaunch.ts";
+import { placementTagCommands } from "../placement/placementPick.ts";
 
 // Return recoverable handles before common MCP client timeouts expire.
 const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
@@ -3133,20 +3134,33 @@ const make = Effect.gen(function* () {
             }
             const taskId = taskEvent.event.payload.id;
             const childThreadId = taskEvent.event.payload.childThreadId;
-            if (childProfile !== null && childThreadId !== null) {
-              yield* threadManagement
-                .dispatch({
-                  type: "thread.tag.set",
-                  commandId: CommandId.make(`${commandId}:placement-tag`),
+            if (
+              childThreadId !== null &&
+              placementSettings !== null &&
+              !isRetryOfAcceptedDelegation
+            ) {
+              const childCreated = result.storedEvents.find(
+                (stored) =>
+                  stored.event.type === "thread.created" && stored.event.threadId === childThreadId,
+              );
+              // The child copies the parent's tags, so it starts in the parent's profile.
+              yield* Effect.forEach(
+                placementTagCommands({
                   threadId: childThreadId,
-                  tag: placementTag(childProfile),
-                  tagged: true,
-                })
-                .pipe(
-                  Effect.catchCause((cause) =>
-                    Effect.logWarning("placement.child-tag-failed", { childThreadId, cause }),
-                  ),
-                );
+                  tags:
+                    childCreated?.event.type === "thread.created"
+                      ? (childCreated.event.payload.tags ?? [])
+                      : [],
+                  profileId: childProfile,
+                  commandId,
+                }),
+                (command) => threadManagement.dispatch(command),
+                { discard: true },
+              ).pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("placement.child-tag-failed", { childThreadId, cause }),
+                ),
+              );
             }
             const childRunEvent = result.storedEvents.find(
               (stored) =>
