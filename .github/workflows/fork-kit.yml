@@ -1,0 +1,109 @@
+# fork-kit: merges each upstream nightly into `placement-profiles` through one sync PR (docs/custom-fork.md).
+# The same file is on prism-nightly (schedule, dispatch) and placement-profiles (guard); keep them equal.
+name: fork-kit
+
+on:
+  schedule:
+    - cron: "23 */2 * * *"
+  workflow_dispatch:
+    inputs:
+      allow-workflow-changes:
+        description: Push even though upstream changed .github/ (review those changes first)
+        type: boolean
+        default: false
+  # The guard runs the workflow as defined on the base branch and never checks
+  # out the pull request's code, so the PR's content cannot change what it does.
+  # labeled/unlabeled: the fork-kit:hold label takes effect at once.
+  pull_request_target:
+    branches: [placement-profiles]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions: {}
+
+jobs:
+  # Merge the newest upstream into the sync branch and keep the sync PR current.
+  sync:
+    if: github.event_name != 'pull_request_target'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Holds FORK_KIT_APP_KEY. Limit its deployment branches to the default
+    # branch, so workflows running on the sync branch cannot read the key.
+    environment: fork-kit
+    permissions:
+      contents: read
+    concurrency:
+      group: fork-kit-sync
+      cancel-in-progress: false
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          app-id: ${{ vars.FORK_KIT_APP_ID }}
+          private-key: ${{ secrets.FORK_KIT_APP_KEY }}
+      # Not actions/checkout: it fails on upstream's vendored .repos gitlinks,
+      # which have no .gitmodules entry. Like checkout, this keeps the token in
+      # the job's git config for fork-kit's fetches and pushes.
+      - name: Check out the default branch
+        env:
+          TOKEN: ${{ steps.app.outputs.token }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          git init -q .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git config "http.$GITHUB_SERVER_URL/.extraheader" "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          git fetch -q --no-tags origin "+$REF:refs/remotes/origin/checkout"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git -c checkout.workers=0 checkout -q --detach origin/checkout
+      - id: fork-kit
+        uses: BierDav/fork-kit@e967a959fbebff8b0185ab1a27699b776cdd0876 # v0.3.0
+        with:
+          command: sync
+          token: ${{ steps.app.outputs.token }}
+          allow-workflow-changes: ${{ inputs.allow-workflow-changes == true }}
+      # The machine-readable result, for dashboards, alerting or a repair agent.
+      - if: always() && steps.fork-kit.outputs.report != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fork-kit-result
+          path: ${{ steps.fork-kit.outputs.report }}
+          retention-days: 30
+
+  # Sets the fork-kit/hold status on every PR into the fork branch, failing
+  # while it has the fork-kit:hold label (a required check). On the sync PR,
+  # also turns auto-merge off when someone other than fork-kit pushed to it.
+  guard:
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      statuses: write
+    concurrency:
+      group: fork-kit-guard-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      # The base branch, not the pull request: nothing from the PR is executed.
+      # Not actions/checkout: it fails on upstream's vendored .repos gitlinks,
+      # which have no .gitmodules entry. Like checkout, this keeps the token in
+      # the job's git config for fork-kit's fetches and pushes.
+      - name: Check out the base branch
+        env:
+          TOKEN: ${{ github.token }}
+          REF: refs/heads/${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          git init -q .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git config "http.$GITHUB_SERVER_URL/.extraheader" "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          git fetch -q --no-tags origin "+$REF:refs/remotes/origin/checkout"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git -c checkout.workers=0 checkout -q --detach origin/checkout
+      - uses: BierDav/fork-kit@e967a959fbebff8b0185ab1a27699b776cdd0876 # v0.3.0
+        with:
+          command: guard
+          token: ${{ github.token }}
