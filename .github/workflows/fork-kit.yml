@@ -40,10 +40,21 @@ jobs:
         with:
           app-id: ${{ vars.FORK_KIT_APP_ID }}
           private-key: ${{ secrets.FORK_KIT_APP_KEY }}
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          token: ${{ steps.app.outputs.token }}
+      # Not actions/checkout: it fails on upstream's vendored .repos gitlinks,
+      # which have no .gitmodules entry. Like checkout, this keeps the token in
+      # the job's git config for fork-kit's fetches and pushes.
+      - name: Check out the default branch
+        env:
+          TOKEN: ${{ steps.app.outputs.token }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          git init -q .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git config "http.$GITHUB_SERVER_URL/.extraheader" "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          git fetch -q --no-tags origin "+$REF:refs/remotes/origin/checkout"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git -c checkout.workers=0 checkout -q --detach origin/checkout
       - id: fork-kit
         uses: BierDav/fork-kit@e967a959fbebff8b0185ab1a27699b776cdd0876 # v0.3.0
         with:
@@ -77,9 +88,21 @@ jobs:
       cancel-in-progress: true
     steps:
       # The base branch, not the pull request: nothing from the PR is executed.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
+      # Not actions/checkout: it fails on upstream's vendored .repos gitlinks,
+      # which have no .gitmodules entry. Like checkout, this keeps the token in
+      # the job's git config for fork-kit's fetches and pushes.
+      - name: Check out the base branch
+        env:
+          TOKEN: ${{ github.token }}
+          REF: refs/heads/${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          git init -q .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git config "http.$GITHUB_SERVER_URL/.extraheader" "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          git fetch -q --no-tags origin "+$REF:refs/remotes/origin/checkout"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git -c checkout.workers=0 checkout -q --detach origin/checkout
       - uses: BierDav/fork-kit@e967a959fbebff8b0185ab1a27699b776cdd0876 # v0.3.0
         with:
           command: guard
