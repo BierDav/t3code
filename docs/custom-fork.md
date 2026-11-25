@@ -6,19 +6,19 @@ Two branches matter here:
   patches listed in `.fork-kit.toml` (account fallback and placement profiles).
   Feature work lands here through pull requests.
 - **`prism-nightly`** is the default branch. It holds the workflows that build
-  releases (`fork-nightly.yml`, `prism-android-nightly.yml`) and the scheduled
-  fork-kit sync. Scheduled workflows only run from the default branch.
+  releases (`fork-nightly.yml`, `prism-android-nightly.yml`), and the
+  `.fork-kit.toml` the central fork-kit sync reads.
 
 ## Keeping up with upstream
 
-[fork-kit](https://github.com/BierDav/fork-kit) (`.github/workflows/fork-kit.yml`)
+[fork-kit](https://github.com/BierDav/fork-kit), run by BierDav/fork-kit's central `sync-forks.yml`,
 merges the newest upstream nightly tag every two hours into the branch
 `fork-kit/sync` and keeps one pull request into `placement-profiles` open for it.
 
 - **Clean merge and `Typecheck and test` green:** the PR merges itself.
 - **Conflicts:** the PR is labelled `fork-kit:conflict` and lists the
   conflicting files with the patches they belong to. Resolve them on
-  `fork-kit/sync` (`npx github:BierDav/fork-kit#v0.3.1 resolve`, or GitHub's
+  `fork-kit/sync` (`npx github:BierDav/fork-kit#v0.4.0 resolve`, or GitHub's
   conflict editor) and merge the PR yourself.
 - **Holding a PR:** add the label `fork-kit:hold` to any PR into `placement-profiles`.
   The required check `fork-kit/hold` then fails and auto-merge goes off, so the
@@ -39,9 +39,11 @@ where `<version>` is the newest upstream nightly merged into it. The fleet's
 
 ## Repository settings this relies on
 
-- **The GitHub App:** its key is the secret `FORK_KIT_APP_KEY` in the
-  environment `fork-kit`, which only `prism-nightly` can deploy to; its ID is
-  the repository variable `FORK_KIT_APP_ID`.
+- **The GitHub App** (fork-kit-bierdav) is installed on all repositories. Its
+  key exists only in BierDav/fork-kit's `fork-kit` environment, where the
+  central sync runs; this repository holds no key. `.github/workflows/fork-kit.yml`
+  on `placement-profiles`
+  is only the guard, which runs on `GITHUB_TOKEN`.
 - **A ruleset on `placement-profiles`:** a pull request and the checks
   `Typecheck and test` and `fork-kit/hold`; no force pushes or deletion.
   Repository admins may bypass it. Add `fork-kit/hold` once the guard runs.

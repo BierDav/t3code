@@ -1,8 +1,11 @@
 # fork-kit (https://github.com/BierDav/fork-kit) keeps this fork merged with
 # upstream through one sync pull request. See docs/custom-fork.md.
 #
-# The same file is on prism-nightly (the default branch, where the scheduled
-# sync runs) and on placement-profiles (where the guard runs); keep them equal.
+# The same file is on prism-nightly (the default branch, where the central sync
+# reads it) and on placement-profiles; keep them equal.
+# The sync runs centrally (BierDav/fork-kit, sync-forks.yml); this repository
+# holds no App key and runs only the guard (.github/workflows/fork-kit.yml on
+# placement-profiles).
 
 [upstream]
 url = "https://github.com/pingdotgg/t3code.git"
