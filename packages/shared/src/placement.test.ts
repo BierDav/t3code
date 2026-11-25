@@ -18,6 +18,8 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   placementDisplaySelection,
   placementMoveTarget,
+  placementReturnTarget,
+  PLACEMENT_RETURN_IDLE_MS,
   placementPickSelection,
   placementProfileOfTags,
   placementSelectionOutOfUsage,
@@ -357,6 +359,42 @@ describe("placementMoveTarget", () => {
 
   it("moves a thread whose model is not in the profile", () => {
     expect(placementMoveTarget(decision, alex)?.reason).toContain("not part of");
+  });
+});
+
+describe("placementReturnTarget", () => {
+  // claude-alex ranks first and has room again; the thread fell back to claude-1 earlier.
+  const decision = rank({
+    entries: [
+      { selection: alex, enabled: true },
+      { selection: one, enabled: true },
+    ],
+    accounts: [
+      account("claude-alex.json", alex.model, windows(10, 20)),
+      account("claude-1.json", one.model, windows(10, 20)),
+    ],
+  });
+  const idle = PLACEMENT_RETURN_IDLE_MS;
+
+  it("returns an idle thread to the higher-ranked account", () => {
+    expect(placementReturnTarget(decision, one, idle)).toMatchObject({ to: alex });
+  });
+
+  it("keeps a recently active thread where its prompt cache is", () => {
+    expect(placementReturnTarget(decision, one, idle - 1)).toBeNull();
+  });
+
+  it("keeps a thread already on the pick", () => {
+    expect(placementReturnTarget(decision, alex, idle)).toBeNull();
+  });
+
+  it("never returns across provider instances", () => {
+    const codex = { ...alex, instanceId: ProviderInstanceId.make("codex") };
+    expect(placementReturnTarget({ ...decision, next: codex }, one, idle)).toBeNull();
+  });
+
+  it("does nothing when no entry can run", () => {
+    expect(placementReturnTarget({ ...decision, next: null }, one, idle)).toBeNull();
   });
 });
 
