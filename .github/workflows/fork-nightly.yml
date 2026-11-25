@@ -1,9 +1,11 @@
 name: Fork nightly
 
-# Merges the feature branch into the newest upstream T3 Code nightly and
-# publishes the Linux x64 CLI, the macOS arm64 CLI and the macOS arm64 desktop
-# app as the prerelease fork-v<upstream version>. A merge conflict, a failed
-# check or a failed build publishes nothing, so the previous release stays.
+# Builds placement-profiles as it is and publishes the Linux x64 CLI, the macOS
+# arm64 CLI and the macOS arm64 desktop app as the prerelease fork-v<version>,
+# where <version> is the newest upstream nightly merged into it. fork-kit
+# (fork-kit.yml) merges each upstream nightly into placement-profiles through a
+# checked pull request, so nothing is merged here. A failed check or build
+# publishes nothing, so the previous release stays.
 #
 # A push to the feature branch cannot start this workflow by itself: push runs
 # use the workflow files of the pushed branch. The schedule picks the branch up
@@ -15,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       feature_ref:
-        description: Branch or commit to merge. Anything but placement-profiles publishes fork-test-v<version> instead.
+        description: Branch or commit to build. Anything but placement-profiles publishes fork-test-v<version> instead.
         required: false
         default: placement-profiles
         type: string
@@ -37,7 +39,7 @@ env:
 
 jobs:
   prepare:
-    name: Pick the upstream nightly and merge
+    name: Find the feature commit and its upstream nightly
     if: github.repository == 'BierDav/t3code' && github.ref_name == 'prism-nightly'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -59,17 +61,6 @@ jobs:
           set -euo pipefail
           [[ "$FEATURE_REF" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "::error::Invalid feature_ref: $FEATURE_REF"; exit 1; }
 
-          # The newest nightly whose release already carries the three assets we replace.
-          tag=$(gh api 'repos/pingdotgg/t3code/releases?per_page=30' --jq '
-            [.[] | select(.prerelease and (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-nightly\\.[0-9]{8}\\.[0-9]+$")))
-                 | select(.tag_name[1:] as $v | [.assets[].name] as $a
-                     | ["t3-\($v)-linux-x64.tar.gz", "t3-\($v)-darwin-arm64.tar.gz", "T3-Code-\($v)-arm64.zip"] as $want
-                     | ($want - $a) == [])
-            ][0].tag_name // empty')
-          [[ -n "$tag" ]] || { echo "::error::No upstream nightly has all three assets."; exit 1; }
-          version="${tag#v}"
-          upstream_sha=$(gh api "repos/pingdotgg/t3code/commits/$tag" --jq .sha)
-
           if ! feature_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$FEATURE_REF" --jq .sha 2>/dev/null); then
             if [[ "$GITHUB_EVENT_NAME" == schedule ]]; then
               echo "::notice::$FEATURE_REF does not exist on $GITHUB_REPOSITORY yet; nothing to build."
@@ -79,6 +70,17 @@ jobs:
             echo "::error::$FEATURE_REF does not exist on $GITHUB_REPOSITORY."
             exit 1
           fi
+
+          # The newest upstream nightly tag the feature commit has merged.
+          # Commits only (tree:0); upstream's tags are not in this repository.
+          git init -q "$RUNNER_TEMP/history"
+          git -C "$RUNNER_TEMP/history" fetch -q --no-tags --filter=tree:0 "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$feature_sha"
+          git -C "$RUNNER_TEMP/history" fetch -q --no-tags --filter=tree:0 https://github.com/pingdotgg/t3code.git '+refs/tags/*:refs/tags/*'
+          tag=$(git -C "$RUNNER_TEMP/history" tag --merged "$feature_sha" --sort=-v:refname 'v*-nightly.*' \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9]{8}\.[0-9]+$' | head -n 1 || true)
+          [[ -n "$tag" ]] || { echo "::error::$FEATURE_REF ($feature_sha) has no upstream nightly merged."; exit 1; }
+          version="${tag#v}"
+          upstream_sha=$(git -C "$RUNNER_TEMP/history" rev-parse "refs/tags/$tag^{commit}")
 
           if [[ "$FEATURE_REF" == placement-profiles ]]; then
             release_tag="fork-v$version"
@@ -116,10 +118,9 @@ jobs:
           fi
           echo "Upstream $tag ($upstream_sha), $FEATURE_REF $feature_sha, release $release_tag, build=$build"
 
-      # Every later job repeats this step on its own runner. The merge commit
-      # takes its dates from the feature commit, so each job gets the same SHA.
+      # Every later job repeats this step on its own runner.
       - &merge
-        name: Merge the feature branch into the upstream nightly
+        name: Check out the feature commit
         if: env.UPSTREAM_TAG != ''
         shell: bash
         run: |
@@ -128,19 +129,13 @@ jobs:
           git fetch -q --no-tags --filter=blob:none https://github.com/pingdotgg/t3code.git "+refs/tags/$UPSTREAM_TAG:refs/tags/$UPSTREAM_TAG"
           git fetch -q --no-tags --filter=blob:none "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$FEATURE_SHA"
           [[ "$(git rev-parse "refs/tags/$UPSTREAM_TAG^{commit}")" == "$UPSTREAM_SHA" ]]
+          git merge-base --is-ancestor "$UPSTREAM_SHA" "$FEATURE_SHA"
           # Upstream's vendored .repos tree holds orphaned gitlinks.
           git sparse-checkout set --no-cone '/*' '!/.repos/'
-          git -c checkout.workers=0 checkout -q --detach "$UPSTREAM_SHA"
-          date=$(git show -s --format=%cI "$FEATURE_SHA")
-          if ! GIT_AUTHOR_DATE="$date" GIT_COMMITTER_DATE="$date" git \
-            -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
-            merge --no-ff --no-edit -m "Merge $FEATURE_REF ($FEATURE_SHA) into $UPSTREAM_TAG" "$FEATURE_SHA"; then
-            git diff --name-only --diff-filter=U | sed 's/^/::error::Merge conflict in /'
-            exit 1
-          fi
-          git log -1 --format='Merged %H'
+          git -c checkout.workers=0 checkout -q --detach "$FEATURE_SHA"
+          git log -1 --format='Building %H'
 
-      - name: Record the merge commit
+      - name: Record the built commit
         id: merged
         if: env.UPSTREAM_TAG != ''
         run: echo "merge_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
