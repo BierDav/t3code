@@ -18,7 +18,7 @@ merges the newest upstream nightly tag every two hours into the branch
 - **Clean merge and `Typecheck and test` green:** the PR merges itself.
 - **Conflicts:** the PR is labelled `fork-kit:conflict` and lists the
   conflicting files with the patches they belong to. Resolve them on
-  `fork-kit/sync` (`npx github:BierDav/fork-kit#v0.3.0 resolve`, or GitHub's
+  `fork-kit/sync` (`npx github:BierDav/fork-kit#v0.3.1 resolve`, or GitHub's
   conflict editor) and merge the PR yourself.
 - **Holding a PR:** add the label `fork-kit:hold` to any PR into `placement-profiles`.
   The required check `fork-kit/hold` then fails and auto-merge goes off, so the
