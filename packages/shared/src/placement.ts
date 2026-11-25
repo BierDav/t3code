@@ -482,6 +482,35 @@ export function placementWaitsForReset(input: {
  * while that entry can still run; it moves when the entry crossed the switch point, ran out,
  * was turned off, or is not part of the profile at all.
  */
+/**
+ * How long a thread must have been idle before its next turn may return it to a higher-ranked
+ * account. By then the provider's prompt cache has expired, so the switch costs nothing extra.
+ */
+export const PLACEMENT_RETURN_IDLE_MS = 10 * 60_000;
+
+/**
+ * Where a thread's next turn returns to after it fell back to a lower-ranked account: the
+ * profile's pick, once the thread has been idle for {@link PLACEMENT_RETURN_IDLE_MS} and the pick
+ * ranks above the thread's own entry on the same provider instance. Null to stay. Without this,
+ * a thread keeps the fallback account for the rest of its life.
+ */
+export function placementReturnTarget(
+  decision: PlacementProfileDecision,
+  current: ModelSelection,
+  idleMs: number,
+): { readonly to: ModelSelection; readonly reason: string } | null {
+  const next = decision.next;
+  if (next == null || idleMs < PLACEMENT_RETURN_IDLE_MS) return null;
+  if (next.instanceId !== current.instanceId || sameEntry(next, current)) return null;
+  const own = decision.ranked.findIndex((entry) => sameEntry(entry.selection, current));
+  const pick = decision.ranked.findIndex((entry) => sameEntry(entry.selection, next));
+  if (own === -1 || pick === -1 || pick > own) return null;
+  return {
+    to: decision.ranked[pick]!.selection,
+    reason: `${next.model} ranks above ${current.model} in the "${decision.label}" profile again`,
+  };
+}
+
 export function placementMoveTarget(
   decision: PlacementProfileDecision,
   current: ModelSelection,

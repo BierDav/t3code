@@ -7,7 +7,12 @@ import {
   type OrchestrationV2Command,
   type ProjectId,
 } from "@t3tools/contracts";
-import { placementMoveTarget, placementProfileOfTags } from "@t3tools/shared/placement";
+import {
+  placementMoveTarget,
+  placementProfileOfTags,
+  placementReturnTarget,
+  sameEntry,
+} from "@t3tools/shared/placement";
 import { availableAccountSelection } from "@t3tools/shared/usageLimits";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -138,13 +143,16 @@ export const withQueuedAttachmentsOnSignOutText = Effect.fn(
 
 /**
  * For a thread tagged `placement:<id>`: the account its next turn should run on. The send's
- * account (an explicit pick inside the profile, else the thread's) stays until it must be left.
+ * account (an explicit pick inside the profile, else the thread's) stays until it must be left,
+ * or, for the thread's own account after `idleMs` without a run, until the profile's pick ranks
+ * above it again (`placementReturnTarget`).
  */
 const placementSelection = Effect.fn("ThreadMessageIntake.placementSelection")(function* (input: {
   readonly profileId: string | null;
   readonly current: ModelSelection;
   readonly requested: ModelSelection | undefined;
   readonly projectId: ProjectId;
+  readonly idleMs: number;
 }) {
   const none = { inProfile: false, selection: null } as const;
   if (input.profileId === null) return none;
@@ -164,8 +172,12 @@ const placementSelection = Effect.fn("ThreadMessageIntake.placementSelection")(f
     now: DateTime.toEpochMillis(yield* DateTime.now),
     projectId: input.projectId,
   });
+  const ownAccount = input.requested === undefined || sameEntry(input.requested, input.current);
   const target =
-    decision === null ? null : placementMoveTarget(decision, input.requested ?? input.current);
+    decision === null
+      ? null
+      : (placementMoveTarget(decision, input.requested ?? input.current) ??
+        (ownAccount ? placementReturnTarget(decision, input.current, input.idleMs) : null));
   return { inProfile: true, selection: target?.to ?? null } as const;
 });
 
@@ -214,11 +226,21 @@ const withAvailableAccount = Effect.fn("ThreadMessageIntake.withAvailableAccount
   if (records === null) return { command, fallback: undefined };
   const { thread } = records;
   const selection = command.modelSelection ?? thread.modelSelection;
+  const profileId = placementProfileOfTags(thread.tags);
+  // Only a profile thread needs to know how long it has been idle.
+  const shell =
+    profileId === null
+      ? null
+      : yield* threads.getThreadShell(command.threadId).pipe(Effect.orElseSucceed(() => null));
+  const lastActive = shell?.latestRunCompletedAt ?? shell?.updatedAt ?? thread.updatedAt;
+  const now = DateTime.toEpochMillis(yield* DateTime.now);
   const placed = yield* placementSelection({
-    profileId: placementProfileOfTags(thread.tags),
+    profileId,
     current: thread.modelSelection,
     requested: command.modelSelection,
     projectId: thread.projectId,
+    // Unknown: treat the thread as active, so it keeps its account.
+    idleMs: lastActive === undefined ? 0 : now - DateTime.toEpochMillis(lastActive),
   });
   // A thread in a placement profile is scheduled by it, not by the account fallback.
   const choose = placed.inProfile ? null : yield* readAccountChoice();
