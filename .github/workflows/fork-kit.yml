@@ -13,9 +13,10 @@ on:
         default: false
   # The guard runs the workflow as defined on the base branch and never checks
   # out the pull request's code, so the PR's content cannot change what it does.
+  # labeled/unlabeled: the fork-kit:hold label takes effect at once.
   pull_request_target:
     branches: [placement-profiles]
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 permissions: {}
 
@@ -44,7 +45,7 @@ jobs:
           fetch-depth: 0
           token: ${{ steps.app.outputs.token }}
       - id: fork-kit
-        uses: BierDav/fork-kit@79d57f370a20b4585a5b77142ecf6a51665941a2 # v0.2.0
+        uses: BierDav/fork-kit@e967a959fbebff8b0185ab1a27699b776cdd0876 # v0.3.0
         with:
           command: sync
           token: ${{ steps.app.outputs.token }}
@@ -57,7 +58,9 @@ jobs:
           path: ${{ steps.fork-kit.outputs.report }}
           retention-days: 30
 
-  # When someone other than fork-kit pushes to the sync PR, turn auto-merge off.
+  # Sets the fork-kit/hold status on every PR into the fork branch, failing
+  # while it has the fork-kit:hold label (a required check). On the sync PR,
+  # also turns auto-merge off when someone other than fork-kit pushed to it.
   guard:
     if: >-
       github.event_name == 'pull_request_target' &&
@@ -68,6 +71,7 @@ jobs:
       contents: read
       pull-requests: write
       issues: write
+      statuses: write
     concurrency:
       group: fork-kit-guard-${{ github.event.pull_request.number }}
       cancel-in-progress: true
@@ -76,7 +80,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: BierDav/fork-kit@79d57f370a20b4585a5b77142ecf6a51665941a2 # v0.2.0
+      - uses: BierDav/fork-kit@e967a959fbebff8b0185ab1a27699b776cdd0876 # v0.3.0
         with:
           command: guard
           token: ${{ github.token }}

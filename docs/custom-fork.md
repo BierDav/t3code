@@ -18,9 +18,12 @@ merges the newest upstream nightly tag every two hours into the branch
 - **Clean merge and `Typecheck and test` green:** the PR merges itself.
 - **Conflicts:** the PR is labelled `fork-kit:conflict` and lists the
   conflicting files with the patches they belong to. Resolve them on
-  `fork-kit/sync` (`npx github:BierDav/fork-kit#v0.2.0 resolve`, or GitHub's
+  `fork-kit/sync` (`npx github:BierDav/fork-kit#v0.3.0 resolve`, or GitHub's
   conflict editor) and merge the PR yourself.
-- **Keeping a PR from merging itself:** add the label `fork-kit:hold`.
+- **Holding a PR:** add the label `fork-kit:hold` to any PR into `placement-profiles`.
+  The required check `fork-kit/hold` then fails and auto-merge goes off, so the
+  PR cannot merge until the label is removed; the next fork-kit run turns
+  auto-merge back on for a sync PR. It holds that PR only, not releases.
 
 Upstream changes `.github/` in most nightlies, so this fork sets
 `workflow_changes = "push"`: those changes are pushed without a human review.
@@ -39,7 +42,7 @@ where `<version>` is the newest upstream nightly merged into it. The fleet's
 - **The GitHub App:** its key is the secret `FORK_KIT_APP_KEY` in the
   environment `fork-kit`, which only `prism-nightly` can deploy to; its ID is
   the repository variable `FORK_KIT_APP_ID`.
-- **A ruleset on `placement-profiles`:** a pull request and the check
-  `Typecheck and test`; no force pushes or deletion. Repository admins may
-  bypass it.
+- **A ruleset on `placement-profiles`:** a pull request and the checks
+  `Typecheck and test` and `fork-kit/hold`; no force pushes or deletion.
+  Repository admins may bypass it. Add `fork-kit/hold` once the guard runs.
 - **Auto-merge** is allowed in the repository settings.
