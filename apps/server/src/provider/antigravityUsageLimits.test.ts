@@ -684,9 +684,6 @@ describe("Antigravity subscription limits", () => {
         }),
       );
       const limits = yield* probe;
-      expect(limits.unavailable?.message).not.toBe(
-        "Sign in with Google to see Antigravity limits.",
-      );
       expect(limits.unavailable?.reason).not.toBe("unsupported");
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
@@ -701,9 +698,7 @@ describe("Antigravity subscription limits", () => {
         missingToken: true,
         keyringSecret: keyringSecret("2026-10-09T14:00:00Z"),
       });
-      expect((yield* personal.probe).unavailable?.message).toBe(
-        "Sign in with Google to see Antigravity limits.",
-      );
+      expect((yield* personal.probe).unavailable).toEqual({ reason: "unsupported" });
       expect(personal.requests).toEqual([]);
 
       const signedIn = yield* fixture({
