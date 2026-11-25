@@ -23,16 +23,17 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          filter: blob:none
-          persist-credentials: false
-          # Upstream's vendored .repos tree holds orphaned gitlinks.
-          sparse-checkout: |
-            /*
-            !/.repos/
-          sparse-checkout-cone-mode: false
+      # Not actions/checkout: it walks upstream's vendored .repos tree, whose
+      # gitlinks have no .gitmodules entry, and fails (fork-nightly.yml does
+      # the same). History without blobs, for the merge base below.
+      - name: Check out the pull request
+        run: |
+          set -euo pipefail
+          git init -q .
+          git fetch -q --no-tags --filter=blob:none "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$GITHUB_SHA"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git -c checkout.workers=0 checkout -q --detach "$GITHUB_SHA"
+          git log -1 --format='Checked out %H'
       - name: Find where the fork branches off upstream
         run: |
           set -euo pipefail
