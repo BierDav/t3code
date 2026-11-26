@@ -4,6 +4,7 @@ import {
   MessageId,
   type ModelSelection,
   type OrchestrationV2ThreadShell,
+  type PlacementSourceConfig,
   type RunId,
   type ThreadId,
   TurnItemId,
@@ -18,11 +19,16 @@ import {
   sameEntry,
 } from "@t3tools/shared/placement";
 import * as DateTime from "effect/DateTime";
+import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
+import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
@@ -32,6 +38,7 @@ import { queuedRunsInDeliveryOrder } from "../orchestration-v2/QueuedRunOrder.ts
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
+import { forkParked } from "../serverActivation.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as UsageLimitSources from "../usage/UsageLimitSources.ts";
 import {
@@ -45,29 +52,46 @@ import {
 import {
   buildPrismSyncRequest,
   decisionsFromPrismResponse,
+  decodePrismStreamResponse,
   type PrismMoveAck,
   type PrismSyncResponse,
   profilesFromPrismResponse,
+  syncOverStream,
   syncWithPrism,
 } from "./prismSync.ts";
+import {
+  openPrismStream,
+  type PrismSocketFactory,
+  type PrismStream,
+  PrismStreamError,
+} from "./prismStream.ts";
 
 const SWEEP_EVERY_MS = 30_000;
 /** A usage-limit failure this recent is moved; older ones are left to limit recovery. */
 const LIMIT_FAILURE_WINDOW_MS = 10 * 60_000;
-/** An interrupt that has not ended its run by then is given up, so the thread can be retried. */
-const INTERRUPT_TIMEOUT_MS = 3 * 60_000;
+/** A Prism stream failure is logged at most this often. */
+const STREAM_ERROR_LOG_EVERY_MS = 10 * 60_000;
 
-interface PendingMove {
+interface Move {
   readonly runId: RunId;
   readonly from: ModelSelection;
   readonly to: ModelSelection;
   readonly reason: string;
   readonly at: string;
-  readonly startedMs: number;
   readonly prismMoveId?: string | undefined;
-  readonly stage: "interrupting" | "compacting";
-  readonly compactRunId?: RunId | undefined;
 }
+
+/** A move carried by the thread's queue: `/compact` on `from`, then the continuation on `to`. */
+interface QueuedMove extends Move {
+  readonly compactMessageId: MessageId | null;
+  readonly continueMessageId: MessageId;
+}
+
+/** What wakes the placement worker between its scheduled sweeps. */
+export type PlacementTrigger =
+  | { readonly kind: "pushed"; readonly response: unknown }
+  | { readonly kind: "connected" }
+  | { readonly kind: "stream-error"; readonly cause: unknown };
 
 const label = (selection: ModelSelection) => selection.model;
 
@@ -112,15 +136,23 @@ function profileThreadFingerprint(threads: ReadonlyArray<OrchestrationV2ThreadSh
     if (thread.archivedAt !== null) continue;
     const profileId = placementProfileOfTags(thread.tags);
     if (profileId === null) continue;
-    parts.push(`${thread.id}:${profileId}:${isLive(thread) ? "1" : "0"}`);
+    const { instanceId, model } = thread.modelSelection;
+    parts.push(`${thread.id}:${profileId}:${isLive(thread) ? "1" : "0"}:${instanceId}/${model}`);
   }
   return parts.join("|");
 }
 
-export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(function* (options?: {
+export interface PlacementWorkerOptions {
   readonly fetchImpl?: typeof fetch | undefined;
   readonly nowMs?: (() => number) | undefined;
-}) {
+  /** How the Prism stream connects; false syncs over HTTP only. */
+  readonly prismStream?: PrismSocketFactory | false | undefined;
+  readonly streamReconnectDelay?: ((attempt: number) => Duration.Duration) | undefined;
+}
+
+export const makePlacementWorker = Effect.fn("PlacementWorker.make")(function* (
+  options?: PlacementWorkerOptions,
+) {
   const settingsService = yield* ServerSettings.ServerSettingsService;
   const registry = yield* ProviderRegistry.ProviderRegistry;
   const usageSources = yield* UsageLimitSources.UsageLimitSources;
@@ -131,7 +163,12 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
   const envIdentity = yield* Effect.serviceOption(ServerEnvironment.ServerEnvironmentIdentity);
   const eventSink = yield* Effect.serviceOption(EventSink.EventSinkV2);
   const book: PlacementBook = yield* PlacementBookRef;
-  const pending = new Map<ThreadId, PendingMove>();
+  const queuedMoves = new Map<ThreadId, QueuedMove>();
+  const triggers = yield* Queue.unbounded<PlacementTrigger>();
+  const lock = yield* Semaphore.make(1);
+  let stream: { readonly client: PrismStream; readonly scope: Scope.Closeable } | null = null;
+  let streamKey = "";
+  let lastStreamErrorLogMs = 0;
   const handledFailures = new Set<string>();
   const pendingAcks: PrismMoveAck[] = [];
   const handledPrismMoves = new Set<string>();
@@ -193,7 +230,7 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
 
   const notifyParent = Effect.fnUntraced(function* (
     thread: OrchestrationV2ThreadShell,
-    move: Omit<PendingMove, "stage" | "compactRunId">,
+    move: Move,
   ) {
     const parentId = thread.lineage.parentThreadId;
     if (inPlace(move)) return;
@@ -222,10 +259,7 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
     });
   });
 
-  const continueOn = Effect.fnUntraced(function* (
-    thread: OrchestrationV2ThreadShell,
-    move: Omit<PendingMove, "stage" | "compactRunId">,
-  ) {
+  const continueOn = Effect.fnUntraced(function* (thread: OrchestrationV2ThreadShell, move: Move) {
     const key = `${thread.id}:${move.runId}`;
     yield* threads.dispatch({
       type: "message.dispatch",
@@ -251,55 +285,29 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
     );
   });
 
-  // Queue the compaction and continuation before interrupting so user messages
-  // already queued follow the continuation onto the new account.
+  // A live run moves through its thread's queue: `/compact` on the account it leaves, then the
+  // continuation on the new one, both queued ahead of any message already waiting, and only then
+  // the interrupt. The thread runs them the moment the interrupt ends the run, with nothing left
+  // for placement to wait for. Returns true once queued, or why the move was not made.
   const startMove = Effect.fnUntraced(function* (
     thread: OrchestrationV2ThreadShell,
-    move: PendingMove,
+    move: Move,
     compactOnFrom: boolean,
   ) {
-    const interrupt = threads
-      .dispatch({
-        type: "run.interrupt",
-        commandId: CommandId.make(`placement-interrupt:${thread.id}:${move.runId}`),
-        threadId: thread.id,
-        runId: move.runId,
-        reason: inPlace(move)
-          ? `Placement: compacting before the limit. ${move.reason}`
-          : `Placement: moving to ${label(move.to)}. ${move.reason}`,
-      })
-      .pipe(
-        Effect.as(true),
-        Effect.catchCause((cause) =>
-          Effect.logWarning("placement.interrupt-failed", { threadId: thread.id, cause }).pipe(
-            Effect.as(false),
-          ),
-        ),
-      );
+    if (inPlace(move) && !compactOnFrom) return "its account has no usage left to compact with";
     const queued = yield* projections.getThreadRecords(thread.id, ["runs", "messages"]).pipe(
       Effect.map(queuedRunsInDeliveryOrder),
       Effect.orElseSucceed(() => []),
     );
-    if (queued.length === 0) {
-      if (!(yield* interrupt)) return false;
-      pending.set(thread.id, move);
-      recordMove(book, { threadId: thread.id, ...move, state: "interrupting" });
-      return true;
-    }
-
     const key = `${thread.id}:${move.runId}`;
+    const compactMessageId = compactOnFrom ? MessageId.make(`placement-compact:${key}`) : null;
+    const continueMessageId = MessageId.make(`placement-move:${key}`);
     const ahead = [
-      ...(compactOnFrom
-        ? [
-            {
-              messageId: MessageId.make(`placement-compact:${key}`),
-              modelSelection: move.from,
-              text: "/compact",
-            },
-          ]
-        : []),
+      ...(compactMessageId === null
+        ? []
+        : [{ messageId: compactMessageId, modelSelection: move.from, text: "/compact" }]),
       {
-        messageId: MessageId.make(`placement-move:${key}`),
+        messageId: continueMessageId,
         modelSelection: move.to,
         text: continuationText(move.from, move.to, move.reason),
       },
@@ -316,32 +324,49 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
         creationSource: "server",
       });
     }
-    const runs = (yield* projections.getThreadRecords(thread.id, ["runs"])).runs;
-    for (const message of ahead) {
-      const run = runs.find(
-        (candidate) =>
-          candidate.userMessageId === message.messageId && candidate.status === "queued",
-      );
-      if (run === undefined) continue;
-      // Ahead of the first queued message that may be passed (completions may not be).
-      for (const before of queued) {
-        const placed = yield* threads
-          .dispatch({
-            type: "queued-run.reorder",
-            commandId: CommandId.make(`placement-reorder:${message.messageId}`),
-            threadId: thread.id,
-            runId: run.id,
-            beforeRunId: before.id,
-          })
-          .pipe(
-            Effect.as(true),
-            Effect.catchCause(() => Effect.succeed(false)),
-          );
-        if (placed) break;
+    queuedMoves.set(thread.id, { ...move, compactMessageId, continueMessageId });
+    if (queued.length > 0) {
+      const runs = (yield* projections.getThreadRecords(thread.id, ["runs"])).runs;
+      for (const message of ahead) {
+        const run = runs.find(
+          (candidate) =>
+            candidate.userMessageId === message.messageId && candidate.status === "queued",
+        );
+        if (run === undefined) continue;
+        // Ahead of the first queued message that may be passed (completions may not be).
+        for (const before of queued) {
+          const placed = yield* threads
+            .dispatch({
+              type: "queued-run.reorder",
+              commandId: CommandId.make(`placement-reorder:${message.messageId}:${before.id}`),
+              threadId: thread.id,
+              runId: run.id,
+              beforeRunId: before.id,
+            })
+            .pipe(
+              Effect.as(true),
+              Effect.catchCause(() => Effect.succeed(false)),
+            );
+          if (placed) break;
+        }
       }
     }
-    yield* interrupt;
-    // The queue carries the move from here; there is nothing left to wait for.
+    // A run that ended on its own meanwhile cannot be interrupted; its queue starts anyway.
+    yield* threads
+      .dispatch({
+        type: "run.interrupt",
+        commandId: CommandId.make(`placement-interrupt:${thread.id}:${move.runId}`),
+        threadId: thread.id,
+        runId: move.runId,
+        reason: inPlace(move)
+          ? `Placement: compacting before the limit. ${move.reason}`
+          : `Placement: moving to ${label(move.to)}. ${move.reason}`,
+      })
+      .pipe(
+        Effect.catchCause((cause) =>
+          Effect.logInfo("placement.interrupt-skipped", { threadId: thread.id, cause }),
+        ),
+      );
     recordMove(book, { threadId: thread.id, ...move, state: "continued" });
     if (move.prismMoveId !== undefined) {
       pendingAcks.push({ id: move.prismMoveId, state: "continued" });
@@ -352,26 +377,171 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
         Effect.logWarning("placement.parent-notice-failed", { threadId: thread.id, cause }),
       ),
     );
-    return true;
+    return true as const;
   });
 
-  return Effect.fn("PlacementWorker.sweep")(function* () {
+  // Watches the moves the queue carries until their continuation starts. A run that fails on its
+  // usage limit stops the queue behind it while that provider is limited (the `/compact` on the
+  // spent account would fail the same way), so the continuation is taken out of the queue and
+  // started on its own.
+  const settleQueuedMoves = Effect.fnUntraced(function* (
+    shellThreads: ReadonlyArray<OrchestrationV2ThreadShell>,
+  ) {
+    if (queuedMoves.size === 0) return;
+    const byId = new Map(shellThreads.map((thread) => [thread.id, thread]));
+    for (const [threadId, move] of queuedMoves) {
+      const thread = byId.get(threadId);
+      if (thread === undefined || thread.archivedAt !== null) {
+        queuedMoves.delete(threadId);
+        continue;
+      }
+      const records = yield* projections.getThreadRecords(threadId, ["runs"]).pipe(Effect.option);
+      // A failed read says nothing about the queue; look again next sweep.
+      if (Option.isNone(records)) continue;
+      const runs = records.value.runs;
+      const continuation = runs.find((run) => run.userMessageId === move.continueMessageId);
+      if (continuation === undefined || continuation.status !== "queued") {
+        // Started, or the owner took it out of the queue.
+        queuedMoves.delete(threadId);
+        continue;
+      }
+      // A provider out of usage stops the queue without marking it held.
+      const stopped =
+        continuation.queueHeld === true ||
+        (thread.status === "failed" && thread.lastErrorClass === "usage_limit");
+      if (isLive(thread) || !stopped) continue;
+      queuedMoves.delete(threadId);
+      for (const run of runs) {
+        if (
+          run.status !== "queued" ||
+          (run.userMessageId !== move.continueMessageId &&
+            run.userMessageId !== move.compactMessageId)
+        ) {
+          continue;
+        }
+        yield* threads
+          .dispatch({
+            type: "queued-run.cancel",
+            commandId: CommandId.make(`placement-unqueue:${run.id}`),
+            threadId,
+            runId: run.id,
+          })
+          .pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("placement.unqueue-failed", { threadId, cause }),
+            ),
+          );
+      }
+      if (thread.latestRunId !== null) handledFailures.add(`${threadId}:${thread.latestRunId}`);
+      const key = `${threadId}:${move.runId}`;
+      yield* threads
+        .dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`placement-move-held:${key}`),
+          messageId: MessageId.make(`placement-move-held:${key}`),
+          threadId,
+          modelSelection: move.to,
+          text: continuationText(move.from, move.to, move.reason),
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "server",
+        })
+        .pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("placement.held-continue-failed", { threadId, cause }),
+          ),
+        );
+    }
+  });
+
+  // One stream per Prism source; a changed URL or token file connects again.
+  const syncStream = Effect.fnUntraced(function* (source: PlacementSourceConfig | null) {
+    const key =
+      source !== null && source.enabled && options?.prismStream !== false
+        ? `${source.url}\n${source.tokenFile}`
+        : "";
+    if (key === streamKey) return;
+    yield* closeStream;
+    streamKey = key;
+    if (key === "" || source === null) return;
+    const scope = yield* Scope.make();
+    const offer = (trigger: PlacementTrigger) => Queue.offer(triggers, trigger).pipe(Effect.asVoid);
+    const client = yield* openPrismStream({
+      baseUrl: source.url,
+      token: fs.readFileString(source.tokenFile).pipe(
+        Effect.mapError(
+          (cause) =>
+            new PrismStreamError({
+              message: `Reading the machine token failed: ${cause.message}`,
+            }),
+        ),
+      ),
+      onUpdate: (response) => offer({ kind: "pushed", response }),
+      onOpen: offer({ kind: "connected" }),
+      onError: (cause) => offer({ kind: "stream-error", cause }),
+      socketFactory: typeof options?.prismStream === "function" ? options.prismStream : undefined,
+      reconnectDelay: options?.streamReconnectDelay,
+    }).pipe(Scope.provide(scope));
+    stream = { client, scope };
+  });
+
+  const closeStream = Effect.suspend(() => {
+    const current = stream;
+    stream = null;
+    streamKey = "";
+    return current === null ? Effect.void : Scope.close(current.scope, Exit.void);
+  });
+
+  const sweepOnce = Effect.fn("PlacementWorker.sweep")(function* (trigger?: PlacementTrigger) {
     const nowMs = options?.nowMs ? options.nowMs() : DateTime.toEpochMillis(yield* DateTime.now);
+    if (trigger?.kind === "stream-error") {
+      if (nowMs - lastStreamErrorLogMs >= STREAM_ERROR_LOG_EVERY_MS) {
+        lastStreamErrorLogMs = nowMs;
+        yield* Effect.logWarning("placement.prism-stream-failed; syncing over HTTP meanwhile", {
+          cause: trigger.cause,
+        });
+      }
+      return;
+    }
     const settings = yield* settingsService.getSettings;
     const source = settings.placementSource;
     const prismEnabled = source !== null && source.enabled;
+    yield* syncStream(prismEnabled ? source : null);
     const shell = yield* projections.getShellSnapshot({ location: "active" });
+    yield* settleQueuedMoves(shell.threads);
+
+    // Prism pushed a changed answer: act on it now, without asking again.
+    let pushed: PrismSyncResponse | null = null;
+    if (trigger?.kind === "pushed") {
+      if (!prismEnabled) return;
+      pushed = yield* decodePrismStreamResponse(trigger.response).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("placement.prism-push-invalid", { cause }).pipe(Effect.as(null)),
+        ),
+      );
+      if (pushed === null) return;
+    }
+
+    // Over the stream a report costs Prism next to nothing, so every change to the profile
+    // threads and every acknowledgement goes out at once; over HTTP at most every 30 seconds.
+    const streamOpen = stream?.client.isOpen() === true;
     const fingerprint = profileThreadFingerprint(shell.threads);
     const profileStateChanged = fingerprint !== lastProfileFingerprint;
     const dueByInterval = nowMs - lastSweepMs >= SWEEP_EVERY_MS;
     const dueByPrismEvent =
-      prismEnabled && profileStateChanged && nowMs - lastPrismAnswerMs >= SWEEP_EVERY_MS;
-    if (!dueByInterval && !dueByPrismEvent) return;
-    lastSweepMs = nowMs;
-    lastProfileFingerprint = fingerprint;
+      prismEnabled &&
+      (profileStateChanged || (streamOpen && pendingAcks.length > 0)) &&
+      (streamOpen || nowMs - lastPrismAnswerMs >= SWEEP_EVERY_MS);
+    const dueByConnect = prismEnabled && trigger?.kind === "connected";
+    if (pushed === null && !dueByInterval && !dueByPrismEvent && !dueByConnect) return;
+    if (pushed === null) {
+      lastSweepMs = nowMs;
+      lastProfileFingerprint = fingerprint;
+    }
 
     if (!prismEnabled && Object.keys(settings.placementProfiles).length === 0) {
-      pending.clear();
+      queuedMoves.clear();
       return;
     }
     const providers = yield* registry.getProviders;
@@ -379,8 +549,8 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
     book.checkedAt = nowMs;
 
     let activeSettings = settings;
-    let prismResponse: PrismSyncResponse | null = null;
-    if (prismEnabled) {
+    let prismResponse: PrismSyncResponse | null = pushed;
+    if (prismEnabled && pushed === null) {
       const environmentId = Option.isSome(envIdentity)
         ? yield* envIdentity.value.getEnvironmentId
         : "local";
@@ -395,40 +565,52 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
         moves: acksToSend,
         nowMs,
       });
-      prismResponse = yield* syncWithPrism({
+      const overHttp = syncWithPrism({
         source,
         body,
         fs,
         fetchImpl: options?.fetchImpl,
-      }).pipe(
+      });
+      const openStream = stream?.client;
+      prismResponse = yield* (
+        openStream !== undefined && openStream.isOpen()
+          ? syncOverStream({ stream: openStream, body }).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logInfo("placement.prism-stream-sync-failed; trying HTTP", {
+                  cause,
+                }).pipe(Effect.andThen(overHttp)),
+              ),
+            )
+          : overHttp
+      ).pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("placement.prism-sync-failed", { cause }).pipe(Effect.as(null)),
         ),
       );
-      if (prismResponse !== null) {
-        pendingAcks.splice(0, acksToSend.length);
-        lastPrismAnswerMs = nowMs;
-        recordRemoteDecisions(book, decisionsFromPrismResponse(prismResponse), nowMs);
-        const nextProfiles = profilesFromPrismResponse(prismResponse);
-        const nextPolicy = prismResponse.policy ?? settings.placementPolicy;
-        if (
-          !Equal.equals(nextProfiles, settings.placementProfiles) ||
-          !Equal.equals(nextPolicy, settings.placementPolicy)
-        ) {
-          const updated = yield* settingsService
-            .updateSettings({
-              placementProfiles: nextProfiles,
-              ...(prismResponse.policy === undefined ? {} : { placementPolicy: nextPolicy }),
-            })
-            .pipe(
-              Effect.catchCause((cause) =>
-                Effect.logWarning("placement.prism-settings-update-failed", { cause }).pipe(
-                  Effect.as(activeSettings),
-                ),
+      if (prismResponse !== null) pendingAcks.splice(0, acksToSend.length);
+    }
+    if (prismResponse !== null) {
+      lastPrismAnswerMs = nowMs;
+      recordRemoteDecisions(book, decisionsFromPrismResponse(prismResponse), nowMs);
+      const nextProfiles = profilesFromPrismResponse(prismResponse);
+      const nextPolicy = prismResponse.policy ?? settings.placementPolicy;
+      if (
+        !Equal.equals(nextProfiles, settings.placementProfiles) ||
+        !Equal.equals(nextPolicy, settings.placementPolicy)
+      ) {
+        const updated = yield* settingsService
+          .updateSettings({
+            placementProfiles: nextProfiles,
+            ...(prismResponse.policy === undefined ? {} : { placementPolicy: nextPolicy }),
+          })
+          .pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("placement.prism-settings-update-failed", { cause }).pipe(
+                Effect.as(activeSettings),
               ),
-            );
-          activeSettings = updated;
-        }
+            ),
+          );
+        activeSettings = updated;
       }
     }
 
@@ -455,135 +637,25 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
       });
     }
 
-    // Finish any in-flight interrupt-and-continue moves first.
-    for (const thread of shell.threads) {
-      const waiting = pending.get(thread.id);
-      if (waiting === undefined) continue;
-      if (waiting.stage === "compacting") {
-        if (isLive(thread) && nowMs - waiting.startedMs <= INTERRUPT_TIMEOUT_MS) {
-          continue;
-        }
-        pending.delete(thread.id);
-        yield* continueOn(thread, waiting).pipe(
-          Effect.catchCause((cause) =>
-            Effect.gen(function* () {
-              recordMove(book, { threadId: thread.id, ...waiting, state: "failed" });
-              if (waiting.prismMoveId !== undefined) {
-                pendingAcks.push({
-                  id: waiting.prismMoveId,
-                  state: "failed",
-                  detail: "continue failed",
-                });
-              }
-              yield* Effect.logWarning("placement.continue-failed", {
-                threadId: thread.id,
-                cause,
-              });
-            }),
-          ),
-        );
-        continue;
-      }
-      if (thread.activeRunId === waiting.runId && isLive(thread)) {
-        if (nowMs - waiting.startedMs > INTERRUPT_TIMEOUT_MS) {
-          pending.delete(thread.id);
-          recordMove(book, { threadId: thread.id, ...waiting, state: "failed" });
-          if (waiting.prismMoveId !== undefined) {
-            pendingAcks.push({
-              id: waiting.prismMoveId,
-              state: "failed",
-              detail: "interrupt timed out",
-            });
-          }
-        }
-        continue;
-      }
-      pending.delete(thread.id);
-      if (
-        thread.latestRunId === waiting.runId &&
-        (thread.status === "interrupted" || thread.status === "failed")
-      ) {
-        // Compaction runs on the account being left, so it is skipped when that one is spent.
-        if (
-          thread.status === "interrupted" &&
-          !placementSelectionOutOfUsage(waiting.from, providers, book.sources, nowMs)
-        ) {
-          const compactKey = `${thread.id}:${waiting.runId}`;
-          const compacted = yield* threads
-            .dispatch({
-              type: "message.dispatch",
-              commandId: CommandId.make(`placement-compact:${compactKey}`),
-              messageId: MessageId.make(`placement-compact:${compactKey}`),
-              threadId: thread.id,
-              modelSelection: waiting.from,
-              text: "/compact",
-              attachments: [],
-              dispatchMode: { type: "start_immediately" },
-              createdBy: "user",
-              creationSource: "server",
-            })
-            .pipe(
-              Effect.as(true),
-              Effect.catchCause((cause) =>
-                Effect.logWarning("placement.compact-failed", {
-                  threadId: thread.id,
-                  cause,
-                }).pipe(Effect.as(false)),
-              ),
-            );
-          if (compacted) {
-            pending.set(thread.id, { ...waiting, stage: "compacting", startedMs: nowMs });
-            continue;
-          }
-        }
-        yield* continueOn(thread, waiting).pipe(
-          Effect.catchCause((cause) =>
-            Effect.gen(function* () {
-              recordMove(book, { threadId: thread.id, ...waiting, state: "failed" });
-              if (waiting.prismMoveId !== undefined) {
-                pendingAcks.push({
-                  id: waiting.prismMoveId,
-                  state: "failed",
-                  detail: "continue failed",
-                });
-              }
-              yield* Effect.logWarning("placement.continue-failed", {
-                threadId: thread.id,
-                cause,
-              });
-            }),
-          ),
-        );
-      } else if (waiting.prismMoveId !== undefined) {
-        pendingAcks.push({
-          id: waiting.prismMoveId,
-          state: "failed",
-          detail: `run ended with status ${thread.status}`,
-        });
-      }
-    }
-
     // When Prism answered, carry out its move instructions instead of local move decisions.
     if (prismResponse !== null) {
       const threadsById = new Map(shell.threads.map((thread) => [thread.id, thread]));
       for (const prismMove of prismResponse.moves ?? []) {
         if (handledPrismMoves.has(prismMove.id)) continue;
         const thread = threadsById.get(prismMove.threadId as ThreadId);
-        if (thread === undefined || thread.archivedAt !== null || pending.has(thread.id)) {
+        if (thread === undefined || thread.archivedAt !== null || queuedMoves.has(thread.id)) {
           continue;
         }
         handledPrismMoves.add(prismMove.id);
         const at = DateTime.formatIso(DateTime.makeUnsafe(nowMs));
         if (isLive(thread) && thread.activeRunId !== null) {
-          const move: PendingMove = {
+          const move: Move = {
             runId: thread.activeRunId,
             from: prismMove.from,
             to: prismMove.to,
             reason: prismMove.reason,
             at,
-            startedMs: nowMs,
             prismMoveId: prismMove.id,
-            stage: "interrupting",
           };
           const started = yield* startMove(
             thread,
@@ -596,8 +668,12 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
               ),
             ),
           );
-          if (!started) {
-            pendingAcks.push({ id: prismMove.id, state: "failed", detail: "interrupt failed" });
+          if (started !== true) {
+            pendingAcks.push({
+              id: prismMove.id,
+              state: "failed",
+              detail: started === false ? "the move could not be queued" : started,
+            });
           }
         } else if (inPlace(prismMove)) {
           // Nothing runs to compact before the limit; the thread stays where it is.
@@ -645,7 +721,6 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
             to: prismMove.to,
             reason: prismMove.reason,
             at,
-            startedMs: nowMs,
             prismMoveId: prismMove.id,
           }).pipe(
             Effect.catchCause((cause) =>
@@ -715,7 +790,7 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
     const prismDecidesMoves = prismResponse !== null;
     for (const thread of shell.threads) {
       const profileId = placementProfileOfTags(thread.tags);
-      if (profileId === null || thread.archivedAt !== null || pending.has(thread.id)) continue;
+      if (profileId === null || thread.archivedAt !== null || queuedMoves.has(thread.id)) continue;
       const decision = decideProfile(book, {
         profileId,
         settings: activeSettings,
@@ -797,7 +872,6 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
           to: target.to,
           reason: target.reason,
           at: DateTime.formatIso(DateTime.makeUnsafe(nowMs)),
-          startedMs: nowMs,
         }).pipe(
           Effect.catchCause((cause) =>
             Effect.logWarning("placement.limit-move-failed", { threadId: thread.id, cause }),
@@ -810,14 +884,12 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
       if (prismDecidesMoves || !isLive(thread) || thread.activeRunId === null) continue;
       const target = placementMoveTarget(decision, thread.modelSelection);
       if (target === null) continue;
-      const move: PendingMove = {
+      const move: Move = {
         runId: thread.activeRunId,
         from: thread.modelSelection,
         to: target.to,
         reason: target.reason,
         at: DateTime.formatIso(DateTime.makeUnsafe(nowMs)),
-        startedMs: nowMs,
-        stage: "interrupting",
       };
       yield* startMove(
         thread,
@@ -830,12 +902,35 @@ export const makePlacementSweep = Effect.fn("PlacementWorker.makeSweep")(functio
       );
     }
   });
+
+  return {
+    /** One sweep; a trigger is what woke it besides the scheduler. Sweeps never overlap. */
+    sweep: (trigger?: PlacementTrigger) => lock.withPermits(1)(sweepOnce(trigger)),
+    /** Wakes from the Prism stream: a pushed answer, a new connection, a failure. */
+    triggers: triggers as Queue.Dequeue<PlacementTrigger>,
+    close: closeStream,
+  };
 });
+
+/** The sweep alone, for callers that drive it themselves. */
+export const makePlacementSweep = (options?: PlacementWorkerOptions) =>
+  makePlacementWorker(options).pipe(Effect.map((worker) => worker.sweep));
 
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
-    const sweep = yield* makePlacementSweep();
+    const worker = yield* makePlacementWorker();
+    yield* Effect.addFinalizer(() => worker.close);
     const scheduler = yield* Scheduler.Scheduler;
-    yield* scheduler.register("placement", sweep());
+    yield* scheduler.register("placement", worker.sweep());
+    // Prism's pushes are carried out the moment they arrive, not at the next tick.
+    yield* forkParked(
+      Queue.take(worker.triggers).pipe(
+        Effect.flatMap((trigger) => worker.sweep(trigger)),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("placement.triggered-sweep-failed", { cause }),
+        ),
+        Effect.forever,
+      ),
+    );
   }),
 );

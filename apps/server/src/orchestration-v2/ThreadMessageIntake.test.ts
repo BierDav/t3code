@@ -660,6 +660,8 @@ it.effect.each([
         Layer.mergeAll(
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             dispatch: layerFailingDispatchHandler(captured),
+            // No shell: the thread counts as active, so it keeps its account.
+            getThreadShell: () => Effect.succeed(null as never),
             getThreadRecords: () =>
               Effect.succeed({
                 thread: {
