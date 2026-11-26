@@ -23,6 +23,8 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 
+import type { PrismStream } from "./prismStream.ts";
+
 export class PrismSyncError extends Schema.TaggedError<PrismSyncError>()("PrismSyncError", {
   message: Schema.String,
   cause: Schema.optional(Schema.Unknown),
@@ -204,6 +206,29 @@ export function decisionsFromPrismResponse(
     ranked: profile.ranked,
   }));
 }
+
+/** A response Prism sent: an answer over the stream or a `placement.update` it pushed. */
+export const decodePrismStreamResponse = (value: unknown) =>
+  decodePrismSyncResponse(value).pipe(
+    Effect.mapError(
+      (cause) => new PrismSyncError({ message: "Prism sent an invalid sync response", cause }),
+    ),
+  );
+
+/** `placement.sync` over the Prism stream (`prismStream.ts`). */
+export const syncOverStream = Effect.fn("placement.syncOverStream")(function* (input: {
+  readonly stream: PrismStream;
+  readonly body: PrismSyncRequest;
+}) {
+  const result = yield* input.stream
+    .call(input.body)
+    .pipe(
+      Effect.mapError(
+        (cause) => new PrismSyncError({ message: "Prism stream sync failed", cause }),
+      ),
+    );
+  return yield* decodePrismStreamResponse(result);
+});
 
 export const syncWithPrism = Effect.fn("placement.syncWithPrism")(function* (input: {
   readonly source: PlacementSourceConfig;

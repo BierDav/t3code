@@ -48,6 +48,20 @@ export function sameEntry(
   return a.instanceId === b.instanceId && a.model === b.model;
 }
 
+/** The same account with the same options (reasoning and the like), in any order. */
+export function sameSelection(
+  a: Pick<ModelSelection, "instanceId" | "model" | "options">,
+  b: Pick<ModelSelection, "instanceId" | "model" | "options">,
+) {
+  if (!sameEntry(a, b)) return false;
+  const options = (selection: Pick<ModelSelection, "options">) =>
+    (selection.options ?? [])
+      .map((option) => `${option.id}=${JSON.stringify(option.value)}`)
+      .sort()
+      .join("\n");
+  return options(a) === options(b);
+}
+
 const PLACEMENT_PROVIDER_NAME = "Profiles";
 
 /**

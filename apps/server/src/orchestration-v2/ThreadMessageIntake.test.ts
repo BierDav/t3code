@@ -610,6 +610,96 @@ it.effect.each([false, true])(
     }).pipe(Effect.provide(layerIntakeTest)),
 );
 
+it.effect.each([
+  {
+    name: "its own account follows the thread",
+    model: "claude-david/claude-opus-5-5",
+    kept: false,
+  },
+  {
+    name: "another account of the profile stays a pick",
+    model: "claude-1/claude-opus-5-5",
+    kept: true,
+  },
+])("a queued message in a profile thread on $name", ({ model, kept }) =>
+  Effect.gen(function* () {
+    const instanceId = ProviderInstanceId.make("claudeAgent");
+    const provider: ServerProvider = {
+      instanceId,
+      driver: ProviderDriverKind.make("claudeAgent"),
+      enabled: true,
+      installed: true,
+      version: null,
+      status: "ready",
+      auth: { status: "authenticated" },
+      checkedAt: "2026-09-13T00:00:00.000Z",
+      models: ["claude-david/claude-opus-5-5", "claude-1/claude-opus-5-5"].map((slug) => ({
+        slug,
+        name: slug,
+        isCustom: false,
+        capabilities: null,
+      })),
+      slashCommands: [],
+      skills: [],
+    };
+    const own = { instanceId, model: "claude-david/claude-opus-5-5" };
+    const captured: OrchestrationV2ServerCommand[] = [];
+    yield* dispatchCommand({
+      type: "message.dispatch",
+      commandId: CommandId.make("send-queued"),
+      threadId: ThreadId.make("thread-profile"),
+      messageId: MessageId.make("message-queued"),
+      modelSelection: { instanceId, model },
+      text: "next",
+      attachments: [],
+      dispatchMode: { type: "queue_after_active" },
+      createdBy: "user",
+      creationSource: "web",
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            dispatch: layerFailingDispatchHandler(captured),
+            // No shell: the thread counts as active, so it keeps its account.
+            getThreadShell: () => Effect.succeed(null as never),
+            getThreadRecords: () =>
+              Effect.succeed({
+                thread: {
+                  id: ThreadId.make("thread-profile"),
+                  projectId: ProjectId.make("project-profile"),
+                  modelSelection: own,
+                  tags: ["placement:coding"],
+                },
+              } as never),
+          }),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({
+            getProviders: Effect.succeed([provider]),
+          }),
+          ServerSettings.layerTest({
+            placementProfiles: {
+              coding: {
+                label: "Coding",
+                entries: [
+                  { selection: own, enabled: true },
+                  { selection: { instanceId, model: "claude-1/claude-opus-5-5" }, enabled: true },
+                ],
+              },
+            },
+          }),
+        ),
+      ),
+      Effect.result,
+    );
+    const sent = captured.find((command) => command.type === "message.dispatch");
+    if (kept) {
+      expect(sent).toMatchObject({ modelSelection: { instanceId, model } });
+    } else {
+      // Without a copy of the account it runs wherever placement has moved the thread.
+      expect(sent).not.toHaveProperty("modelSelection");
+    }
+  }).pipe(Effect.provide(layerIntakeTest)),
+);
+
 it.effect("refuses a queued edit that keeps a file another edit already deleted", () =>
   Effect.gen(function* () {
     const config = yield* ServerConfig.ServerConfig;
