@@ -368,8 +368,7 @@ export function compactBeforeSendTokens(input: {
     );
   const lastInstanceId =
     latestCompletedRun?.providerInstanceId ?? providerThread?.providerInstanceId ?? null;
-  const accountSwitched =
-    lastInstanceId !== null && lastInstanceId !== input.selection.instanceId;
+  const accountSwitched = lastInstanceId !== null && lastInstanceId !== input.selection.instanceId;
   return contextWindow !== null &&
     shouldOfferResumeCompaction({
       provider: provider.driver,

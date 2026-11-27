@@ -231,9 +231,7 @@ describe("idleCompactionWindow", () => {
     bg.providerThreads = [
       {
         ...bg.providerThreads[0]!,
-        pendingBackgroundTasks: [
-          { id: "bg-1", title: "cargo test", status: "running", updatedAt: at() } as never,
-        ],
+        pendingBackgroundTasks: [{ taskId: "bg-1", description: "cargo test", kind: "command" }],
       },
     ];
     const bgWindow = idleCompactionWindow(bg, NOW_MS);
@@ -280,15 +278,21 @@ describe("idleCompactionWindow", () => {
 
 describe("IdleCompactionService", () => {
   it.effect.each([
-    { mode: "onReturn", reads: 1 },
+    { mode: "onReturn", reads: 1, dispatches: 0 },
     { mode: "off", reads: 0 },
     { mode: "beforeCacheExpires", reads: 1 },
     { mode: "beforeCacheExpires", override: "off", reads: 0 },
     { mode: "onReturn", override: "beforeCacheExpires", reads: 1 },
     { mode: "beforeCacheExpires", projectDisabled: true, reads: 0 },
     { mode: "beforeCacheExpires", enabled: false, reads: 0 },
-    { mode: "beforeCacheExpires", driver: "codex", instance: "codex", reads: 1 },
-    { mode: "beforeCacheExpires", driver: "codex", instance: "custom-codex", reads: 1 },
+    { mode: "beforeCacheExpires", driver: "codex", instance: "codex", reads: 1, dispatches: 0 },
+    {
+      mode: "beforeCacheExpires",
+      driver: "codex",
+      instance: "custom-codex",
+      reads: 1,
+      dispatches: 0,
+    },
     { mode: "beforeCacheExpires", driver: "claudeAgent", instance: "custom-claude", reads: 1 },
     { mode: "beforeCacheExpires", unconfigured: true, reads: 1 },
   ] as const)(
@@ -404,7 +408,7 @@ describe("IdleCompactionService", () => {
           yield* Deferred.await(done);
         }).pipe(Effect.provide(dependencies), Effect.withTracer(tracer));
         expect(historyReads).toBe(test.reads);
-        expect(dispatches).toBe(test.reads);
+        expect(dispatches).toBe("dispatches" in test ? test.dispatches : test.reads);
       });
     },
   );

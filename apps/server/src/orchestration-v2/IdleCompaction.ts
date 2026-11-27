@@ -126,7 +126,12 @@ export function idleCompactionWindow(
   const latestUsage = usages[0];
   const expiresAt = latestUsage?.promptCacheExpiresAt;
   let endMs = expiresAt === undefined ? Number.NaN : Date.parse(expiresAt);
-  if (!Number.isFinite(endMs) && keepAlive && latestUsage !== undefined && defaultTtlMs !== undefined) {
+  if (
+    !Number.isFinite(endMs) &&
+    keepAlive &&
+    latestUsage !== undefined &&
+    defaultTtlMs !== undefined
+  ) {
     const updatedAtMs = Date.parse(latestUsage.updatedAt);
     if (Number.isFinite(updatedAtMs)) {
       endMs = updatedAtMs + defaultTtlMs;
