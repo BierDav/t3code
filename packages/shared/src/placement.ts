@@ -168,19 +168,6 @@ export function placementDisplaySelection(input: {
   return { instanceId: PLACEMENT_INSTANCE_ID, model: profileId };
 }
 
-/** The account a pick of the profile starts on: its ranked choice, else its first turned-on entry. */
-export function placementPickSelection(
-  decision: PlacementProfileDecision | null,
-  profile: PlacementProfile | undefined,
-) {
-  return (
-    decision?.next ??
-    profile?.entries.find((entry) => entry.enabled)?.selection ??
-    profile?.entries[0]?.selection ??
-    null
-  );
-}
-
 export interface PlacementLoad {
   /** Threads with a run in progress on this entry. */
   readonly running: number;
@@ -359,7 +346,7 @@ export function selectionRunnable(
 const percent = (value: number) => `${Math.round(value)}%`;
 
 /** How long before a limit runs out, at the current pace, a running thread is moved. */
-const PLACEMENT_PREEMPT_LEAD_MS = 10 * 60_000;
+const PLACEMENT_PREEMPT_LEAD_MS = 15 * 60_000;
 
 const resetsWithinWait = (window: { readonly resetsAt?: string | undefined }, now: number) => {
   const reset = window.resetsAt === undefined ? NaN : Date.parse(window.resetsAt);
@@ -458,10 +445,15 @@ function decideEntry(entry: PlacementEntry, input: PlacementRankInput): Placemen
     weeklySlackSessions !== undefined &&
     weeklySlackSessions <=
       (input.policy.weeklyMoveSlackSessions ?? DEFAULT_WEEKLY_MOVE_SLACK_SESSIONS);
-  const preempt = fillsWeekly
-    ? null
-    : placementPreemptReason(session, weekly, entry, input.policy.switchAtPercent, load, input.now);
-  if (preempt !== null) {
+  const preempt = placementPreemptReason(
+    session,
+    weekly,
+    entry,
+    input.policy.switchAtPercent,
+    load,
+    input.now,
+  );
+  if (preempt !== null && !fillsWeekly) {
     return {
       ...base,
       ...readings,
@@ -475,7 +467,7 @@ function decideEntry(entry: PlacementEntry, input: PlacementRankInput): Placemen
   if (session !== undefined && load.burnPerThreadPerHour !== undefined) {
     const reset = session.resetsAt === undefined ? NaN : Date.parse(session.resetsAt);
     const hoursLeft = Number.isFinite(reset)
-      ? Math.max(0, (reset - input.now) / HOUR)
+      ? Math.min(SESSION_HOURS, Math.max(0, (reset - input.now) / HOUR))
       : SESSION_HOURS;
     predictedSessionPercent =
       session.usedPercent + load.burnPerThreadPerHour * (load.running + 1) * hoursLeft;
@@ -484,6 +476,10 @@ function decideEntry(entry: PlacementEntry, input: PlacementRankInput): Placemen
   const decision = {
     ...base,
     ...readings,
+    ...(preempt !== null && fillsWeekly ? { compactBeforeLimit: preempt } : {}),
+    ...(preempt !== null || (session?.usedPercent ?? 0) >= input.policy.switchAtPercent
+      ? { acceptsNewWork: false }
+      : {}),
     ...(predictedSessionPercent === undefined ? {} : { predictedSessionPercent }),
     ...(weeklySlackSessions === undefined ? {} : { weeklySlackSessions }),
   };
@@ -518,6 +514,19 @@ function decideEntry(entry: PlacementEntry, input: PlacementRankInput): Placemen
 
 const RUNNABLE = new Set(["ok", "promoted", "full"]);
 
+export function placementAcceptsNewWork(entry: PlacementEntryDecision) {
+  return RUNNABLE.has(entry.state) && entry.acceptsNewWork !== false;
+}
+
+/** A fresh turn needs headroom even when an in-flight turn is allowed to stay. */
+export function placementAdmission(
+  decision: PlacementProfileDecision,
+  preferred?: ModelSelection,
+): ModelSelection | null {
+  const own = preferred && decision.ranked.find((entry) => sameEntry(entry.selection, preferred));
+  return own && placementAcceptsNewWork(own) ? own.selection : decision.next;
+}
+
 /** The profile's entries in the order a new thread tries them, and the one it starts on. */
 export function rankPlacementProfile(input: PlacementRankInput): PlacementProfileDecision {
   const decided = input.profile.entries.map((entry, index) => ({
@@ -535,7 +544,7 @@ export function rankPlacementProfile(input: PlacementRankInput): PlacementProfil
       a.index - b.index,
   );
   const ranked = decided.map(({ decision }) => decision);
-  const next = ranked.find((decision) => RUNNABLE.has(decision.state))?.selection ?? null;
+  const next = ranked.find(placementAcceptsNewWork)?.selection ?? null;
   return { id: input.id, label: input.profile.label, next, ranked };
 }
 
@@ -562,6 +571,7 @@ export function placementWaitsForReset(input: {
   return !input.decision.ranked.some(
     (entry) =>
       entry.state === "promoted" &&
+      placementAcceptsNewWork(entry) &&
       entry.weeklySlackSessions !== undefined &&
       entry.weeklySlackSessions <= limit &&
       !sameEntry(entry.selection, input.current),
@@ -609,7 +619,7 @@ export function placementMoveTarget(
   const own = decision.ranked.find((entry) => sameEntry(entry.selection, current));
   if (own !== undefined && RUNNABLE.has(own.state)) return null;
   const to = decision.ranked.find(
-    (entry) => RUNNABLE.has(entry.state) && !sameEntry(entry.selection, current),
+    (entry) => placementAcceptsNewWork(entry) && !sameEntry(entry.selection, current),
   )?.selection;
   if (to === undefined) return null;
   return {

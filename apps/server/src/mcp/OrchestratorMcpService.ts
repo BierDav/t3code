@@ -3055,6 +3055,12 @@ const make = Effect.gen(function* () {
                 providers,
                 projectId: parent.thread.projectId,
               });
+        if (childProfile !== null && placed === null) {
+          return yield* failure(
+            "model_unavailable",
+            `No account in the "${childProfile}" profile can take new work right now.`,
+          );
+        }
         const target =
           placed === null
             ? requestedTarget

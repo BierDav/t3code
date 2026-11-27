@@ -26,6 +26,7 @@ import {
   decideProfile,
   makePlacementBook,
   PlacementBookRef,
+  recordPlacementLimit,
   recordRemoteDecisions,
   recordSessionSample,
   REMOTE_DECISION_TTL_MS,
@@ -99,12 +100,26 @@ describe("recordSessionSample", () => {
     );
   });
 
+  it("detects a quota spike after a quiet stretch", () => {
+    const book = makePlacementBook();
+    for (const [offset, used] of [
+      [0, 18],
+      [20, 24],
+      [27, 49],
+      [34, 68],
+    ] as const) {
+      recordSessionSample(book, "k", { at: offset * minute, used, running: 2 });
+    }
+    expect(book.burn.get("k")).toBeCloseTo((44 * 60) / (14 * 2));
+  });
+
   it("starts over when the window resets", () => {
     const book = makePlacementBook();
     recordSessionSample(book, "k", { at: 0, used: 80, running: 1 });
     recordSessionSample(book, "k", { at: 20 * minute, used: 90, running: 1 });
     recordSessionSample(book, "k", { at: 25 * minute, used: 2, running: 1 });
     expect(book.samples.get("k")).toHaveLength(1);
+    expect(book.burn.get("k")).toBeUndefined();
   });
 
   it("learns nothing while no thread runs", () => {
@@ -256,6 +271,30 @@ describe("Prism placement sync", () => {
       provider: "Claude",
     });
     expect(request.models[1]).not.toHaveProperty("hidden");
+  });
+
+  it("blocks an account across model variants despite a runnable Prism decision", () => {
+    const book = makePlacementBook();
+    const selection = claude("claude-david/claude-opus-5-5");
+    const t0 = 1_000_000;
+    const reset = t0 + 60_000;
+    const input = { profileId: "coding", settings, providers: [provider], now: t0 + 1 };
+    recordRemoteDecisions(
+      book,
+      [
+        {
+          id: "coding",
+          label: "Coding",
+          next: selection,
+          ranked: [{ selection, state: "ok", reason: "Stale reading", runningThreads: 0 }],
+        },
+      ],
+      t0,
+    );
+    recordPlacementLimit(book, claude("claude-david/claude-sonnet"), t0, reset);
+    expect(decideProfile(book, input)?.next).toBeNull();
+    expect(decideProfile(book, input)?.ranked[0]?.state).toBe("exhausted");
+    expect(decideProfile(book, { ...input, now: reset })?.next).toEqual(selection);
   });
 
   it("uses Prism's remote decision while fresh and falls back to local ranking when stale", () => {
@@ -783,6 +822,7 @@ describe("Prism placement sync", () => {
   const harness = (input: {
     readonly thread: OrchestrationV2ThreadShell;
     readonly response: PrismSyncResponse;
+    readonly nowMs?: () => number;
     readonly prismStream?: ReturnType<typeof fakeSocketFactory>["factory"];
   }) =>
     Effect.gen(function* () {
@@ -847,7 +887,7 @@ describe("Prism placement sync", () => {
             headers: { "content-type": "application/json" },
           });
         },
-        nowMs: () => 1_000_000,
+        nowMs: input.nowMs ?? (() => 1_000_000),
       }).pipe(Effect.provide(layer), Effect.provideService(PlacementBookRef, makePlacementBook()));
       return {
         worker,
@@ -881,6 +921,60 @@ describe("Prism placement sync", () => {
     ],
     moves,
   });
+
+  it.effect("waits for a destination to reset rather than continuing onto nearly spent quota", () =>
+    Effect.gen(function* () {
+      const failedAt = Date.parse("2026-11-27T12:40:00Z");
+      let now = failedAt;
+      const readyAt = failedAt + 29 * 60_000;
+      const david = claude("claude-david/claude-opus-5-5");
+      const one = claude("claude-1/claude-opus-5-5");
+      const response = (ready: boolean): PrismSyncResponse => {
+        const base = codingResponse([]);
+        return {
+          ...base,
+          profiles: base.profiles.map((p) => ({
+            ...p,
+            next: ready ? one : null,
+            ranked: [
+              { selection: david, state: "exhausted", reason: "Spent", runningThreads: 0 },
+              {
+                selection: one,
+                state: "ok",
+                reason: "Near reset",
+                runningThreads: 0,
+                acceptsNewWork: ready,
+                session: {
+                  usedPercent: ready ? 0 : 97,
+                  resetsAt: DateTime.formatIso(DateTime.makeUnsafe(readyAt)),
+                },
+              },
+            ],
+          })),
+        };
+      };
+      const { worker, dispatched } = yield* harness({
+        thread: liveThread({
+          status: "failed",
+          activityRunStatus: undefined,
+          activeRunId: null,
+          lastErrorClass: "usage_limit",
+          latestRunCompletedAt: DateTime.makeUnsafe(failedAt),
+          usageLimitResetAt: DateTime.formatIso(DateTime.makeUnsafe(failedAt + 2 * 3_600_000)),
+        }),
+        response: response(false),
+        nowMs: () => now,
+      });
+      yield* worker.sweep();
+      expect(dispatched).toHaveLength(0);
+      now = readyAt;
+      yield* worker.sweep({ kind: "pushed", response: response(true) });
+      expect(dispatched.find((cmd) => cmd.type === "message.dispatch")).toMatchObject({
+        modelSelection: one,
+        dispatchMode: { type: "start_immediately" },
+      });
+    }),
+  );
 
   it.effect("starts the continuation on its own when the run before it hit its limit", () =>
     Effect.gen(function* () {

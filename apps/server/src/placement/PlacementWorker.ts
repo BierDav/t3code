@@ -11,6 +11,7 @@ import {
   TurnItemId,
 } from "@t3tools/contracts";
 import {
+  placementAcceptsNewWork,
   placementEntryKey,
   placementMoveTarget,
   placementProfileOfTags,
@@ -46,7 +47,9 @@ import {
   decideProfile,
   type PlacementBook,
   PlacementBookRef,
+  placementLimitedUntil,
   recordMove,
+  recordPlacementLimit,
   recordRemoteDecisions,
   recordSessionSample,
 } from "./PlacementBook.ts";
@@ -70,6 +73,7 @@ import {
 const SWEEP_EVERY_MS = 30_000;
 /** A usage-limit failure this recent is moved; older ones are left to limit recovery. */
 const LIMIT_FAILURE_WINDOW_MS = 10 * 60_000;
+const MAX_CAPACITY_WAIT_MS = 5 * 60 * 60_000;
 /** A Prism stream failure is logged at most this often. */
 const STREAM_ERROR_LOG_EVERY_MS = 10 * 60_000;
 
@@ -496,6 +500,9 @@ export const makePlacementWorker = Effect.fn("PlacementWorker.make")(function* (
     return current === null ? Effect.void : Scope.close(current.scope, Exit.void);
   });
 
+  const waitingForCapacity = new Map<ThreadId, RunId>();
+  const compactedWindow = new Map<ThreadId, { model: string; reset: string }>();
+
   const sweepOnce = Effect.fn("PlacementWorker.sweep")(function* (trigger?: PlacementTrigger) {
     const nowMs = options?.nowMs ? options.nowMs() : DateTime.toEpochMillis(yield* DateTime.now);
     if (trigger?.kind === "stream-error") {
@@ -513,6 +520,19 @@ export const makePlacementWorker = Effect.fn("PlacementWorker.make")(function* (
     yield* syncStream(prismEnabled ? source : null);
     const shell = yield* projections.getShellSnapshot({ location: "active" });
     yield* settleQueuedMoves(shell.threads);
+    // Share provider rejections across all profile paths before a slow Prism request.
+    for (const thread of shell.threads) {
+      if (waitingForCapacity.get(thread.id) !== thread.latestRunId) {
+        waitingForCapacity.delete(thread.id);
+      }
+      if (thread.status !== "failed" || thread.lastErrorClass !== "usage_limit") continue;
+      recordPlacementLimit(
+        book,
+        thread.modelSelection,
+        DateTime.toEpochMillis(thread.latestRunCompletedAt ?? thread.updatedAt),
+        Date.parse(thread.usageLimitResetAt ?? ""),
+      );
+    }
 
     // Prism pushed a changed answer: act on it now, without asking again.
     let pushed: PrismSyncResponse | null = null;
@@ -650,6 +670,37 @@ export const makePlacementWorker = Effect.fn("PlacementWorker.make")(function* (
           continue;
         }
         handledPrismMoves.add(prismMove.id);
+        if (!sameEntry(thread.modelSelection, prismMove.from)) {
+          pendingAcks.push({
+            id: prismMove.id,
+            state: "failed",
+            detail: "the source account changed",
+          });
+          continue;
+        }
+        const profileId = placementProfileOfTags(thread.tags);
+        const decision =
+          profileId === null
+            ? null
+            : decideProfile(book, {
+                profileId,
+                settings: activeSettings,
+                providers,
+                now: nowMs,
+                projectId: thread.projectId,
+              });
+        const target = decision?.ranked.find((entry) => sameEntry(entry.selection, prismMove.to));
+        if (
+          (!inPlace(prismMove) && target !== undefined && !placementAcceptsNewWork(target)) ||
+          placementLimitedUntil(book, prismMove.to, nowMs) !== null
+        ) {
+          pendingAcks.push({
+            id: prismMove.id,
+            state: "failed",
+            detail: "the destination cannot take new work",
+          });
+          continue;
+        }
         const at = DateTime.formatIso(DateTime.makeUnsafe(nowMs));
         if (isLive(thread) && thread.activeRunId !== null) {
           const move: Move = {
@@ -663,7 +714,8 @@ export const makePlacementWorker = Effect.fn("PlacementWorker.make")(function* (
           const started = yield* startMove(
             thread,
             move,
-            !placementSelectionOutOfUsage(move.from, providers, book.sources, nowMs),
+            placementLimitedUntil(book, move.from, nowMs) === null &&
+              !placementSelectionOutOfUsage(move.from, providers, book.sources, nowMs),
           ).pipe(
             Effect.catchCause((cause) =>
               Effect.logWarning("placement.move-start-failed", { threadId: thread.id, cause }).pipe(
@@ -687,17 +739,6 @@ export const makePlacementWorker = Effect.fn("PlacementWorker.make")(function* (
           thread.latestRunId !== null &&
           thread.pendingRuntimeRequest === null
         ) {
-          const profileId = placementProfileOfTags(thread.tags);
-          const decision =
-            profileId === null
-              ? null
-              : decideProfile(book, {
-                  profileId,
-                  settings: activeSettings,
-                  providers,
-                  now: nowMs,
-                  projectId: thread.projectId,
-                });
           if (
             decision !== null &&
             placementWaitsForReset({
@@ -792,6 +833,11 @@ export const makePlacementWorker = Effect.fn("PlacementWorker.make")(function* (
     // may not show yet.
     const prismDecidesMoves = prismResponse !== null;
     for (const thread of shell.threads) {
+      if (
+        !isLive(thread) &&
+        (thread.status !== "failed" || thread.lastErrorClass !== "usage_limit")
+      )
+        continue;
       const profileId = placementProfileOfTags(thread.tags);
       if (profileId === null || thread.archivedAt !== null || queuedMoves.has(thread.id)) continue;
       const decision = decideProfile(book, {
@@ -800,6 +846,7 @@ export const makePlacementWorker = Effect.fn("PlacementWorker.make")(function* (
         providers,
         now: nowMs,
         projectId: thread.projectId,
+        useLocal: !prismDecidesMoves,
       });
       if (decision === null) continue;
 
@@ -853,12 +900,15 @@ export const makePlacementWorker = Effect.fn("PlacementWorker.make")(function* (
         thread.lastErrorClass === "usage_limit" &&
         thread.latestRunId !== null &&
         thread.pendingRuntimeRequest === null &&
+        thread.settledOverride !== "settled" &&
+        (thread.snoozedUntil == null || DateTime.toEpochMillis(thread.snoozedUntil) <= nowMs) &&
         nowMs - DateTime.toEpochMillis(thread.latestRunCompletedAt ?? thread.updatedAt) <=
-          LIMIT_FAILURE_WINDOW_MS
+          (waitingForCapacity.get(thread.id) === thread.latestRunId
+            ? MAX_CAPACITY_WAIT_MS
+            : LIMIT_FAILURE_WINDOW_MS)
       ) {
         const failureKey = `${thread.id}:${thread.latestRunId}`;
         if (handledFailures.has(failureKey)) continue;
-        handledFailures.add(failureKey);
         const exhausted = {
           ...decision,
           ranked: decision.ranked.map((entry) =>
@@ -868,7 +918,12 @@ export const makePlacementWorker = Effect.fn("PlacementWorker.make")(function* (
           ),
         };
         const target = placementMoveTarget(exhausted, thread.modelSelection);
-        if (target === null) continue;
+        if (target === null) {
+          waitingForCapacity.set(thread.id, thread.latestRunId);
+          continue;
+        }
+        waitingForCapacity.delete(thread.id);
+        handledFailures.add(failureKey);
         yield* continueOn(thread, {
           runId: thread.latestRunId,
           from: thread.modelSelection,
@@ -885,7 +940,24 @@ export const makePlacementWorker = Effect.fn("PlacementWorker.make")(function* (
 
       // A live run on an account past its switch point is stopped mid-turn and continued.
       if (prismDecidesMoves || !isLive(thread) || thread.activeRunId === null) continue;
-      const target = placementMoveTarget(decision, thread.modelSelection);
+      const own = decision.ranked.find((entry) =>
+        sameEntry(entry.selection, thread.modelSelection),
+      );
+      const compactReason =
+        own?.compactBeforeLimit ?? (own?.state === "over_threshold" ? own.reason : undefined);
+      const window = {
+        model: placementEntryKey(thread.modelSelection),
+        reset: own?.session?.resetsAt ?? "",
+      };
+      const previous = compactedWindow.get(thread.id);
+      const canCompact =
+        placementLimitedUntil(book, thread.modelSelection, nowMs) === null &&
+        !placementSelectionOutOfUsage(thread.modelSelection, providers, book.sources, nowMs);
+      const target =
+        placementMoveTarget(decision, thread.modelSelection) ??
+        (canCompact && compactReason !== undefined && !Equal.equals(previous, window)
+          ? { to: thread.modelSelection, reason: compactReason }
+          : null);
       if (target === null) continue;
       const move: Move = {
         runId: thread.activeRunId,
@@ -894,15 +966,14 @@ export const makePlacementWorker = Effect.fn("PlacementWorker.make")(function* (
         reason: target.reason,
         at: DateTime.formatIso(DateTime.makeUnsafe(nowMs)),
       };
-      yield* startMove(
-        thread,
-        move,
-        !placementSelectionOutOfUsage(move.from, providers, book.sources, nowMs),
-      ).pipe(
+      const started = yield* startMove(thread, move, canCompact).pipe(
         Effect.catchCause((cause) =>
-          Effect.logWarning("placement.move-start-failed", { threadId: thread.id, cause }),
+          Effect.logWarning("placement.move-start-failed", { threadId: thread.id, cause }).pipe(
+            Effect.as(false),
+          ),
         ),
       );
+      if (started === true && inPlace(move)) compactedWindow.set(thread.id, window);
     }
   });
 

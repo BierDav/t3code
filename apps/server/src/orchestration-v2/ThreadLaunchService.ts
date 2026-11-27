@@ -57,7 +57,12 @@ import { parseGitCloneProgressLine } from "../project/gitCloneProgress.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
-import { placementTagCommands, resolvePlacementPick } from "../placement/placementPick.ts";
+import {
+  noPlacementCapacity,
+  type PlacementCapacityError,
+  placementTagCommands,
+  resolvePlacementPick,
+} from "../placement/placementPick.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
@@ -245,7 +250,9 @@ export class ThreadLaunchService extends Context.Service<
       input: ThreadLaunchInput,
     ) => Effect.Effect<
       ThreadLaunchResult,
-      ThreadLaunchError | ThreadManagement.ThreadManagementProviderInstanceDisabledError
+      | ThreadLaunchError
+      | PlacementCapacityError
+      | ThreadManagement.ThreadManagementProviderInstanceDisabledError
     >;
     /** Check a new worktree's base ref and branch name before creation for early errors; launch otherwise accepts and reports these failures inside the thread. */
     readonly checkWorktreeBase: (
@@ -1853,6 +1860,7 @@ const make = Effect.gen(function* () {
       Effect.provideService(ServerSettings.ServerSettingsService, serverSettings),
     );
     if (picked === null) return yield* launch(request);
+    if (picked.selection === null) return yield* noPlacementCapacity(picked.profileId);
     const result = yield* launch({ ...request, modelSelection: picked.selection });
     yield* Effect.forEach(
       placementTagCommands({

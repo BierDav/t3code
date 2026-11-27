@@ -476,6 +476,12 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 ),
                 projectId,
               });
+        if (placementProfileId !== null && placedSelection === null) {
+          return yield* new OrchestratorMcpFailure({
+            code: "model_unavailable",
+            message: `No account in the "${placementProfileId}" profile can take new work right now.`,
+          });
+        }
         const modelSelection =
           validatedModelSelection ??
           placedSelection ??

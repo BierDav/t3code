@@ -20,7 +20,7 @@ import {
   placementMoveTarget,
   placementReturnTarget,
   PLACEMENT_RETURN_IDLE_MS,
-  placementPickSelection,
+  placementAdmission,
   placementProfileOfTags,
   placementSelectionOutOfUsage,
   placementWaitsForReset,
@@ -208,8 +208,12 @@ describe("rankPlacementProfile", () => {
           account("claude-1.json", one.model, windows(10, 20)),
         ],
       });
-    expect(at(0.4).next).toEqual(david);
-    expect(at(0.4).ranked[0]).toMatchObject({ selection: david, state: "ok" });
+    expect(at(0.4).next).toEqual(one);
+    expect(at(0.4).ranked[0]).toMatchObject({
+      selection: david,
+      state: "ok",
+      acceptsNewWork: false,
+    });
     expect(at(0.6).next).toEqual(one);
     expect(at(0.6).ranked[1]).toMatchObject({ selection: david, state: "over_threshold" });
   });
@@ -231,12 +235,10 @@ describe("rankPlacementProfile", () => {
           ),
         ],
         load: () =>
-          burnPerThreadPerHour === null
-            ? { running: 2 }
-            : { running: 2, burnPerThreadPerHour },
+          burnPerThreadPerHour === null ? { running: 2 } : { running: 2, burnPerThreadPerHour },
       }).ranked[0];
-    // Two threads at 30% per hour: 15% left lasts 15 minutes, 8% only 8.
-    expect(stateOf(85, 20)?.state).not.toBe("over_threshold");
+    // Two threads at 30% per hour: 20% left lasts 20 minutes, 8% only 8.
+    expect(stateOf(80, 20)?.state).not.toBe("over_threshold");
     expect(stateOf(92, 20)).toMatchObject({
       state: "over_threshold",
       reason: expect.stringContaining("session limit is at 92%"),
@@ -497,16 +499,26 @@ describe("placement provider", () => {
     );
   });
 
-  it("starts a pick on the ranked choice, else the first turned-on entry", () => {
-    const coding = profile([
-      { selection: david, enabled: false },
-      { selection: one, enabled: true },
-    ]);
-    expect(placementPickSelection(null, coding)).toEqual(one);
-    expect(placementPickSelection({ id: "c", label: "C", next: alex, ranked: [] }, coding)).toEqual(
-      alex,
-    );
-    expect(placementPickSelection(null, undefined)).toBeNull();
+  it("keeps an existing run near reset but refuses new work, including handoffs", () => {
+    const decision = rank({
+      entries: [
+        { selection: one, enabled: true },
+        { selection: david, enabled: true },
+      ],
+      accounts: [
+        account("claude-1.json", one.model, windows(97, 20, 72, 29 / 60)),
+        account("claude-david.json", david.model, windows(100, 20)),
+      ],
+    });
+    expect(decision.ranked[0]).toMatchObject({
+      selection: one,
+      state: "ok",
+      acceptsNewWork: false,
+    });
+    expect(placementMoveTarget(decision, one)).toBeNull();
+    expect(placementMoveTarget(decision, david)).toBeNull();
+    expect(decision.next).toBeNull();
+    expect(placementAdmission(decision, one)).toBeNull();
   });
 
   it("displays a pending pick of another account as itself", () => {
