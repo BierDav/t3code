@@ -3,13 +3,18 @@
  * `placement.sync` is the POST's body and answer; Prism pushes a changed answer as
  * `placement.update`. While the connection is down, `call` fails and the worker uses HTTP.
  */
+import * as NodeModule from "node:module";
+
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
-import { WebSocket as UndiciWebSocket } from "undici";
+import type * as Undici from "undici";
+
+// undici is external to the CLI bundle; Node single-executables can load it from disk only with require.
+const requireUndici = NodeModule.createRequire(import.meta.url);
 
 export const PRISM_STREAM_SUBPROTOCOL = "jsonrpc-2.0";
 export const PRISM_METHOD_SYNC = "placement.sync";
@@ -41,7 +46,7 @@ export type PrismSocketFactory = (
 ) => PrismSocket;
 
 const undiciSocket: PrismSocketFactory = (url, init) =>
-  new UndiciWebSocket(url, {
+  new (requireUndici("undici") as typeof Undici).WebSocket(url, {
     protocols: [...init.protocols],
     headers: init.headers,
   }) as unknown as PrismSocket;
