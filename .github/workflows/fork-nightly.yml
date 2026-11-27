@@ -10,16 +10,14 @@ name: Fork nightly
 # A push to the feature branch cannot start this workflow by itself: push runs
 # use the workflow files of the pushed branch. Fork check (fork-check.yml on
 # placement-profiles) runs on that push instead, and its successful run starts
-# this one: workflow_run always uses the default branch's workflow files. The
-# schedule is a fallback, and a dispatch starts a build at once.
+# this one: workflow_run always uses the default branch's workflow files.
+# A manual dispatch can retry a build.
 
 on:
   workflow_run:
     workflows: [Fork check]
     types: [completed]
     branches: [placement-profiles]
-  schedule:
-    - cron: "17,47 * * * *"
   workflow_dispatch:
     inputs:
       feature_ref:

@@ -11,9 +11,10 @@ Two branches matter here:
 
 ## Keeping up with upstream
 
-[fork-kit](https://github.com/BierDav/fork-kit), run by BierDav/fork-kit's central `sync-forks.yml`,
-merges the newest upstream nightly tag every two hours into the branch
-`fork-kit/sync` and keeps one pull request into `placement-profiles` open for it.
+Prism checks for new upstream nightly tags and dispatches
+[this fork's sync workflow](https://github.com/BierDav/t3code/actions/workflows/fork-kit.yml)
+when a sync is due. Fork Kit merges the newest nightly into `fork-kit/sync`
+and keeps one pull request into `placement-profiles` up to date.
 
 - **Clean merge and `Typecheck and test` green:** the PR merges itself.
 - **Conflicts:** the PR is labelled `fork-kit:conflict` and lists the
@@ -32,18 +33,17 @@ its one environment (`prism-android-signing`) deploys only from `prism-nightly`.
 
 ## Releases
 
-`fork-nightly.yml` (on `prism-nightly`, every 30 minutes) builds
-`placement-profiles` as it is and publishes the prerelease `fork-v<version>`,
-where `<version>` is the newest upstream nightly merged into it. The fleet's
+A successful `Fork check` after a push to `placement-profiles` starts
+`fork-nightly.yml` on `prism-nightly`. It builds the fork and publishes
+`fork-v<version>`, where `<version>` is the newest upstream nightly merged
+into it. If a build fails, dispatch it again from Actions. The fleet's
 `bump-t3-nightly.sh` moves to a release once its three assets are up.
 
 ## Repository settings this relies on
 
-- **The GitHub App** (fork-kit-bierdav) is installed on all repositories. Its
-  key exists only in BierDav/fork-kit's `fork-kit` environment, where the
-  central sync runs; this repository holds no key. `.github/workflows/fork-kit.yml`
-  on `placement-profiles`
-  is only the guard, which runs on `GITHUB_TOKEN`.
+- **The GitHub App** (fork-kit-bierdav) mints a token scoped to this fork.
+  The `fork-kit` environment exposes its credentials only on `prism-nightly`.
+  The guard on `placement-profiles` runs on `GITHUB_TOKEN`.
 - **A ruleset on `placement-profiles`:** a pull request and the checks
   `Typecheck and test` and `fork-kit/hold`; no force pushes or deletion.
   Repository admins may bypass it. Add `fork-kit/hold` once the guard runs.
