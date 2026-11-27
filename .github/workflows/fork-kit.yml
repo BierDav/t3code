@@ -1,0 +1,67 @@
+# Prism dispatches syncs here. See https://github.com/BierDav/fork-kit.
+name: fork-kit
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Report what would happen without pushing or changing a pull request
+        type: boolean
+        default: false
+      allow-workflow-changes:
+        description: Push even though upstream changed .github/ (review those changes first)
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  # Merge the newest upstream into the sync branch and keep the sync PR current.
+  sync:
+    if: github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Holds FORK_KIT_APP_KEY. Limit its deployment branches to the default
+    # branch, so workflows running on the sync branch cannot read the key.
+    environment: fork-kit
+    permissions:
+      contents: read
+    concurrency:
+      group: fork-kit-sync
+      cancel-in-progress: false
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          app-id: ${{ vars.FORK_KIT_APP_ID }}
+          private-key: ${{ secrets.FORK_KIT_APP_KEY }}
+      # Fork Kit only needs the manifest in the working tree; T3 Code also
+      # has upstream gitlinks without .gitmodules that actions/checkout rejects.
+      - name: Fetch the fork manifest and history
+        env:
+          TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          set -euo pipefail
+          git init -q .
+          fork_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git remote add origin "$fork_url"
+          credential="$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          echo "::add-mask::$credential"
+          git config "http.$fork_url.extraheader" "AUTHORIZATION: basic $credential"
+          git fetch -q --no-tags origin "$GITHUB_SHA"
+          git sparse-checkout set --no-cone /.fork-kit.toml
+          git checkout -q --detach FETCH_HEAD
+      - id: fork-kit
+        uses: BierDav/fork-kit@19f2b51e7edf71d5bf385dac66319e9a2a2448b8 # v0.4.0
+        with:
+          command: sync
+          dry-run: ${{ inputs.dry-run == true }}
+          token: ${{ steps.app.outputs.token }}
+          allow-workflow-changes: ${{ inputs.allow-workflow-changes == true }}
+      # The machine-readable result, for dashboards, alerting or a repair agent.
+      - if: always() && steps.fork-kit.outputs.report != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fork-kit-result
+          path: ${{ steps.fork-kit.outputs.report }}
+          retention-days: 30
