@@ -4,6 +4,7 @@ import {
   MessageId,
   type ModelSelection,
   type OrchestrationV2ThreadShell,
+  PLACEMENT_COMPACTION_MESSAGE_ID_PREFIX,
   type PlacementSourceConfig,
   type RunId,
   type ThreadId,
@@ -300,7 +301,9 @@ export const makePlacementWorker = Effect.fn("PlacementWorker.make")(function* (
       Effect.orElseSucceed(() => []),
     );
     const key = `${thread.id}:${move.runId}`;
-    const compactMessageId = compactOnFrom ? MessageId.make(`placement-compact:${key}`) : null;
+    const compactMessageId = compactOnFrom
+      ? MessageId.make(`${PLACEMENT_COMPACTION_MESSAGE_ID_PREFIX}${key}`)
+      : null;
     const continueMessageId = MessageId.make(`placement-move:${key}`);
     const ahead = [
       ...(compactMessageId === null

@@ -214,6 +214,54 @@ describe("rankPlacementProfile", () => {
     expect(at(0.6).ranked[1]).toMatchObject({ selection: david, state: "over_threshold" });
   });
 
+  it("moves a thread before a limit runs out at the current pace", () => {
+    const stateOf = (
+      session: number,
+      weekly: number,
+      sessionResetHours = 3,
+      burnPerThreadPerHour: number | null = 30,
+    ) =>
+      rank({
+        entries: [{ selection: david, enabled: true, sessionShareOfWeekly: 10 }],
+        accounts: [
+          account(
+            "claude-david.json",
+            david.model,
+            windows(session, weekly, 72, sessionResetHours),
+          ),
+        ],
+        load: () =>
+          burnPerThreadPerHour === null
+            ? { running: 2 }
+            : { running: 2, burnPerThreadPerHour },
+      }).ranked[0];
+    // Two threads at 30% per hour: 15% left lasts 15 minutes, 8% only 8.
+    expect(stateOf(85, 20)?.state).not.toBe("over_threshold");
+    expect(stateOf(92, 20)).toMatchObject({
+      state: "over_threshold",
+      reason: expect.stringContaining("session limit is at 92%"),
+    });
+    // Near a session reset the thread runs into the limit and waits.
+    expect(stateOf(92, 20, 0.4)?.state).not.toBe("over_threshold");
+    // Weekly: 6% per hour leaves 0.8% for 8 minutes.
+    expect(stateOf(20, 99.2)).toMatchObject({
+      state: "over_threshold",
+      reason: expect.stringContaining("weekly limit is at 99%"),
+    });
+    // Without a known pace only the session switch point applies.
+    expect(stateOf(92, 99.2, 3, null)?.state).not.toBe("over_threshold");
+  });
+
+  it("runs into the limit while the weekly allowance still has to be spent", () => {
+    const decision = rank({
+      entries: [{ selection: david, enabled: true, sessionShareOfWeekly: 10 }],
+      accounts: [account("claude-david.json", david.model, windows(97, 50, 4))],
+      load: () => ({ running: 1, burnPerThreadPerHour: 30 }),
+    });
+    expect(decision.ranked[0]?.state).not.toBe("over_threshold");
+    expect(decision.ranked[0]?.weeklySlackSessions).toBeLessThan(0);
+  });
+
   it("counts only active hours for the weekly rule when they are set", () => {
     expect(usableHours(now, now + 24 * 3_600_000)).toBe(24);
     const utc = DateTime.zoneMakeOffset(0);

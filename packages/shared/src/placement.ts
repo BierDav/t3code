@@ -358,6 +358,62 @@ export function selectionRunnable(
 
 const percent = (value: number) => `${Math.round(value)}%`;
 
+/** How long before a limit runs out, at the current pace, a running thread is moved. */
+const PLACEMENT_PREEMPT_LEAD_MS = 10 * 60_000;
+
+const resetsWithinWait = (window: { readonly resetsAt?: string | undefined }, now: number) => {
+  const reset = window.resetsAt === undefined ? NaN : Date.parse(window.resetsAt);
+  return Number.isFinite(reset) && reset - now <= PLACEMENT_LIMIT_WAIT_MS;
+};
+
+const minutesToLimit = (used: number, percentPerHour: number) =>
+  percentPerHour > 0 ? (Math.max(0, 100 - used) / percentPerHour) * 60 : undefined;
+
+/**
+ * Why a running thread should be interrupted and compacted now: its session is at the switch
+ * point, or its session or weekly window runs out within PLACEMENT_PREEMPT_LEAD_MS at the
+ * current pace. A window that resets within PLACEMENT_LIMIT_WAIT_MS is run into and waited for.
+ */
+function placementPreemptReason(
+  session: { readonly usedPercent: number; readonly resetsAt?: string | undefined } | undefined,
+  weekly: { readonly usedPercent: number; readonly resetsAt?: string | undefined } | undefined,
+  entry: PlacementEntry,
+  switchAtPercent: number,
+  load: { readonly running: number; readonly burnPerThreadPerHour?: number },
+  now: number,
+): string | null {
+  const leadMinutes = PLACEMENT_PREEMPT_LEAD_MS / 60_000;
+  const sessionRate =
+    load.burnPerThreadPerHour === undefined
+      ? undefined
+      : load.burnPerThreadPerHour * Math.max(1, load.running);
+  if (session !== undefined && !resetsWithinWait(session, now)) {
+    if (session.usedPercent >= switchAtPercent) {
+      return `The session limit is at ${percent(session.usedPercent)}, at or past the ${percent(switchAtPercent)} switch point.`;
+    }
+    const minutes =
+      sessionRate === undefined ? undefined : minutesToLimit(session.usedPercent, sessionRate);
+    if (minutes !== undefined && minutes <= leadMinutes) {
+      return `The session limit is at ${percent(session.usedPercent)} and runs out in about ${Math.max(1, Math.round(minutes))} min at the current pace.`;
+    }
+  }
+  if (
+    weekly !== undefined &&
+    sessionRate !== undefined &&
+    entry.sessionShareOfWeekly !== undefined &&
+    !resetsWithinWait(weekly, now)
+  ) {
+    const minutes = minutesToLimit(
+      weekly.usedPercent,
+      (sessionRate * entry.sessionShareOfWeekly) / 100,
+    );
+    if (minutes !== undefined && minutes <= leadMinutes) {
+      return `The weekly limit is at ${percent(weekly.usedPercent)} and runs out in about ${Math.max(1, Math.round(minutes))} min at the current pace.`;
+    }
+  }
+  return null;
+}
+
 function decideEntry(entry: PlacementEntry, input: PlacementRankInput): PlacementEntryDecision {
   const { selection } = entry;
   const load = input.load(selection);
@@ -388,21 +444,30 @@ function decideEntry(entry: PlacementEntry, input: PlacementRankInput): Placemen
       reason: `Out of usage${all.resetsAt ? ` until ${all.resetsAt}` : ""}.`,
     };
   }
-  // The switch point leaves headroom before the session limit, so a turn does not run into it.
-  // Within PLACEMENT_LIMIT_WAIT_MS of the reset it does not apply: the thread may hit the limit
-  // and waits for the reset instead, keeping its prompt cache (placementWaitsForReset). The weekly
-  // window has no switch point: what is left of it is spent, and only 100% stops.
-  const sessionReset = session?.resetsAt === undefined ? NaN : Date.parse(session.resetsAt);
-  if (
-    session !== undefined &&
-    session.usedPercent >= input.policy.switchAtPercent &&
-    !(Number.isFinite(sessionReset) && sessionReset - input.now <= PLACEMENT_LIMIT_WAIT_MS)
-  ) {
+  let weeklySlackSessions: number | undefined;
+  if (entry.sessionShareOfWeekly !== undefined && weekly !== undefined && weekly.resetsAt) {
+    const needed = (100 - weekly.usedPercent) / entry.sessionShareOfWeekly;
+    const left =
+      usableHours(input.now, Date.parse(weekly.resetsAt), input.policy.activeHours) / SESSION_HOURS;
+    weeklySlackSessions = Math.round((left - needed) * 10) / 10;
+  }
+  // Interrupt and compact before a limit is hit, while the account can still run the compaction
+  // (placementPreemptReason). An entry whose weekly allowance still has to be spent (slack at most
+  // weeklyMoveSlackSessions) runs into the limit instead and moves without compaction.
+  const fillsWeekly =
+    weeklySlackSessions !== undefined &&
+    weeklySlackSessions <=
+      (input.policy.weeklyMoveSlackSessions ?? DEFAULT_WEEKLY_MOVE_SLACK_SESSIONS);
+  const preempt = fillsWeekly
+    ? null
+    : placementPreemptReason(session, weekly, entry, input.policy.switchAtPercent, load, input.now);
+  if (preempt !== null) {
     return {
       ...base,
       ...readings,
+      ...(weeklySlackSessions === undefined ? {} : { weeklySlackSessions }),
       state: "over_threshold",
-      reason: `The session limit is at ${percent(session.usedPercent)}, at or past the ${percent(input.policy.switchAtPercent)} switch point.`,
+      reason: preempt,
     };
   }
 
@@ -416,13 +481,6 @@ function decideEntry(entry: PlacementEntry, input: PlacementRankInput): Placemen
       session.usedPercent + load.burnPerThreadPerHour * (load.running + 1) * hoursLeft;
   }
 
-  let weeklySlackSessions: number | undefined;
-  if (entry.sessionShareOfWeekly !== undefined && weekly !== undefined && weekly.resetsAt) {
-    const needed = (100 - weekly.usedPercent) / entry.sessionShareOfWeekly;
-    const left =
-      usableHours(input.now, Date.parse(weekly.resetsAt), input.policy.activeHours) / SESSION_HOURS;
-    weeklySlackSessions = Math.round((left - needed) * 10) / 10;
-  }
   const decision = {
     ...base,
     ...readings,
