@@ -1,5 +1,9 @@
 import { isListedThreadLineage, type OrchestrationV2ThreadProjection } from "@t3tools/contracts";
-import { COMPACTION_SUGGESTION_MIN_TOKENS } from "@t3tools/shared/claudeCompaction";
+import {
+  COMPACTION_ACCOUNT_SWITCH_MIN_TOKENS,
+  COMPACTION_SUGGESTION_MIN_TOKENS,
+  defaultPromptCacheTtlMs,
+} from "@t3tools/shared/claudeCompaction";
 import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as DateTime from "effect/DateTime";
 
@@ -10,6 +14,9 @@ const MIN_CONTEXT_TOKENS = COMPACTION_SUGGESTION_MIN_TOKENS;
 // Start this long before the cache expires: enough for the session to resume
 // and send the compaction while the cache is still warm.
 const LEAD_MS = 2 * 60_000;
+// When a thread is waiting for background work or a delegated child, compact
+// 5 minutes before the prompt cache expires to keep the context warm/small.
+const KEEP_ALIVE_LEAD_MS = 5 * 60_000;
 
 export type IdleCompactionRecords = Pick<
   OrchestrationV2ThreadProjection,
@@ -45,6 +52,7 @@ export function idleCompactionWindow(
   readonly runId: (typeof runs)[number]["id"];
   readonly startMs: number;
   readonly endMs: number;
+  readonly keepAlive: boolean;
 } | null {
   if (thread.deletedAt !== null || thread.archivedAt !== null) return null;
   if (thread.settledAt !== null || thread.settledOverride === "settled") return null;
@@ -70,9 +78,10 @@ export function idleCompactionWindow(
         transfer.type === "merge_back" &&
         transfer.targetThreadId === thread.id &&
         transfer.status === "pending",
-    ) ||
-    // Background work reports into the next turn; compaction would swallow it. A delegated
-    // child's result arrives later as its own message, so it does not count.
+    )
+  )
+    return null;
+  const hasPendingBackground =
     derivePendingBackgroundWork({
       latestRun,
       runs,
@@ -81,29 +90,49 @@ export function idleCompactionWindow(
         (item) => item.type !== "subagent" || item.origin !== "app_owned",
       ),
       activeProviderThreadId: thread.activeProviderThreadId,
-    }).length > 0
-  )
-    return null;
+    }).length > 0;
+  const hasRunningDelegate = turnItems.some(
+    (item) =>
+      item.type === "subagent" &&
+      item.origin === "app_owned" &&
+      (item.status === "pending" || item.status === "running" || item.status === "waiting"),
+  );
+  const keepAlive = hasPendingBackground || hasRunningDelegate;
   const providerThread = providerThreads.find(
     (candidate) => candidate.id === thread.activeProviderThreadId,
   );
-  // The thread's current selection receives the /compact, so it must still be this Claude session.
   if (
-    providerThread?.driver !== "claudeAgent" ||
+    providerThread === undefined ||
     providerThread.id !== latestRun.providerThreadId ||
     providerThread.providerInstanceId !== thread.providerInstanceId ||
     latestRun.providerInstanceId !== thread.providerInstanceId
   )
     return null;
+  // Normal idle compaction only runs on Claude; keep-alive compaction runs on any
+  // provider with a known prompt cache TTL.
+  const defaultTtlMs = defaultPromptCacheTtlMs(providerThread.driver);
+  if (!keepAlive && providerThread.driver !== "claudeAgent") return null;
+  if (keepAlive && defaultTtlMs === undefined) return null;
   const usages = providerTurns
     .filter((turn) => turn.providerThreadId === providerThread.id && turn.tokenUsage !== undefined)
     .map((turn) => turn.tokenUsage!)
     .toSorted((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
-  if ((usages[0]?.usedTokens ?? 0) < MIN_CONTEXT_TOKENS) return null;
+  const minContextTokens = keepAlive ? COMPACTION_ACCOUNT_SWITCH_MIN_TOKENS : MIN_CONTEXT_TOKENS;
+  if ((usages[0]?.usedTokens ?? 0) < minContextTokens) return null;
   // A request served fully from cache creates no cache entry and reports no
-  // TTL, but it still refreshes the cache. Treat it as unknown and skip.
-  const expiresAt = usages[0]?.promptCacheExpiresAt;
-  const endMs = expiresAt === undefined ? Number.NaN : Date.parse(expiresAt);
+  // TTL, but it still refreshes the cache. For normal Claude idle compaction,
+  // treat it as unknown and skip. For keep-alive compaction on other providers,
+  // fall back to the provider's default prompt cache TTL from updatedAt.
+  const latestUsage = usages[0];
+  const expiresAt = latestUsage?.promptCacheExpiresAt;
+  let endMs = expiresAt === undefined ? Number.NaN : Date.parse(expiresAt);
+  if (!Number.isFinite(endMs) && keepAlive && latestUsage !== undefined && defaultTtlMs !== undefined) {
+    const updatedAtMs = Date.parse(latestUsage.updatedAt);
+    if (Number.isFinite(updatedAtMs)) {
+      endMs = updatedAtMs + defaultTtlMs;
+    }
+  }
   if (!Number.isFinite(endMs) || nowMs >= endMs) return null;
-  return { runId: latestRun.id, startMs: endMs - LEAD_MS, endMs };
+  const leadMs = keepAlive ? KEEP_ALIVE_LEAD_MS : LEAD_MS;
+  return { runId: latestRun.id, startMs: endMs - leadMs, endMs, keepAlive };
 }

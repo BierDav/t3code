@@ -229,6 +229,20 @@ describe("compactBeforeSendTokens", () => {
       expected: true,
     },
     {
+      name: "after switching to another Claude account while cache is still warm above 100K",
+      selected: claudeWork,
+      usedTokens: 120_000,
+      now: "2026-10-30T15:23:02.000Z",
+      expected: true,
+    },
+    {
+      name: "after switching to another Claude account under 100K",
+      selected: claudeWork,
+      usedTokens: 99_999,
+      now: "2026-10-30T15:23:02.000Z",
+      expected: false,
+    },
+    {
       name: "after switching to a Claude instance with another home",
       selected: claudeOtherHome,
       expected: false,
