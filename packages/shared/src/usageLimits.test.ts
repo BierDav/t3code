@@ -27,9 +27,15 @@ import {
   usesChatGptSharing,
   resolveNewThreadModelSelection,
 } from "./usageLimits.ts";
-import { collectLimitNotices } from "./usageLimitsCopy.ts";
+import { collectLimitNotices, resetCreditChoices } from "./usageLimitsCopy.ts";
 
 const now = Date.parse("2026-09-03T12:00:00.000Z");
+const hubWeeklyGrant = {
+  creditId: "weekly-grant",
+  label: "Weekly reset",
+  description: "Refills your weekly limit.",
+  availableCount: 2,
+};
 
 const window = {
   id: "five_hour",
@@ -627,7 +633,7 @@ describe("pools", () => {
     expect(account?.environments).toEqual([{ environmentId: "env-a", label: "Laptop" }]);
   });
 
-  it("redeems through the hub when it holds a credit, even with a fresher native read", () => {
+  it.each([false, true])("uses hub credits with named grants: %s", (named) => {
     const native = provider({
       driver: claude,
       instanceId: ProviderInstanceId.make("claude"),
@@ -656,7 +662,11 @@ describe("pools", () => {
                     usageLimits: {
                       checkedAt,
                       windows: [{ ...window, usedPercent: 55 }],
-                      resetCredits: { availableCount: 2, nextCreditId: "hub-credit" },
+                      resetCredits: {
+                        availableCount: 2,
+                        nextCreditId: "hub-credit",
+                        ...(named ? { options: [hubWeeklyGrant] } : {}),
+                      },
                     },
                   },
                 ],
@@ -671,7 +681,13 @@ describe("pools", () => {
       environmentId: "env-a",
       input: { sourceId: "hub", accountId: "claude-same@example.com.json", creditId: "hub-credit" },
     });
-    expect(account?.limits.resetCredits?.availableCount).toBe(3);
+    expect(account?.limits.resetCredits?.availableCount).toBe(named ? 2 : 3);
+    if (named) {
+      const choices = resetCreditChoices(account!.limits.resetCredits!, account!.redeem!.input, 0);
+      expect(choices.map((choice) => choice.input)).toEqual([
+        { sourceId: "hub", accountId: "claude-same@example.com.json", creditId: "weekly-grant" },
+      ]);
+    }
   });
 
   it("redeems on the environment whose snapshot supplied the credits on show", () => {
@@ -1624,7 +1640,7 @@ describe("/usage-limits", () => {
     ]);
   });
 
-  it("redeems a native duplicate through the hub even when the native snapshot is fresher", () => {
+  it.each([false, true])("uses composer hub credits with named grants: %s", (named) => {
     const fresher = provider({
       usageLimits: {
         checkedAt: "2026-09-03T11:30:00.000Z",
@@ -1646,7 +1662,11 @@ describe("/usage-limits", () => {
             email: "SAME@example.com",
             usageLimits: {
               ...limits,
-              resetCredits: { availableCount: 2, nextCreditId: "hub-credit" },
+              resetCredits: {
+                availableCount: 2,
+                nextCreditId: "hub-credit",
+                ...(named ? { options: [hubWeeklyGrant] } : {}),
+              },
             },
           },
         ],
@@ -1658,7 +1678,7 @@ describe("/usage-limits", () => {
       accountId: "duplicate",
       creditId: "hub-credit",
     });
-    expect(report?.accounts[0]?.limits.resetCredits?.availableCount).toBe(3);
+    expect(report?.accounts[0]?.limits.resetCredits?.availableCount).toBe(named ? 2 : 3);
   });
 
   it("labels hub rows by account id without .json", () => {

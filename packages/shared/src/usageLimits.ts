@@ -469,7 +469,11 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
       ),
     ];
     const winner = fresher ? next : previous;
-    const creditSource = creditSources.get(key);
+    const hubRedeem = hubRedeems.get(key);
+    // Named grants must come from the account that will redeem them.
+    const creditSource = hubRedeem?.limits.resetCredits?.options
+      ? hubRedeem
+      : creditSources.get(key);
     // A hub e-mail names the account better than the driver's default instance name.
     const hubEmail = [previous, next].some(
       (account) => account.environments.length === 0 && account.email,
@@ -487,7 +491,7 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
       environments,
       sourceLabel: environments.length > 0 ? null : (previous.sourceLabel ?? next.sourceLabel),
       redeem:
-        hubRedeems.get(key)?.redeem ??
+        hubRedeem?.redeem ??
         (creditSource ? creditSource.redeem : (winner.redeem ?? previous.redeem ?? next.redeem)),
       limits: {
         ...winner.limits,
@@ -1126,15 +1130,15 @@ export function collectProviderUsageLimits(
         (a, b) =>
           Date.parse(b.account.usageLimits.checkedAt) - Date.parse(a.account.usageLimits.checkedAt),
       )[0];
-    const hubCreditId = hubCredits?.account.usageLimits.resetCredits?.nextCreditId;
+    const hubResetCredits = hubCredits?.account.usageLimits.resetCredits;
+    const hubCreditId = hubResetCredits?.nextCreditId;
     const showHubCredits =
       hubCredits &&
       (!credits ||
+        (hubCreditId && hubResetCredits?.options) ||
         Date.parse(hubCredits.account.usageLimits.checkedAt) >
           Date.parse(credits.limits.checkedAt));
-    const shownCredits = showHubCredits
-      ? hubCredits.account.usageLimits.resetCredits
-      : credits?.limits.resetCredits;
+    const shownCredits = showHubCredits ? hubResetCredits : credits?.limits.resetCredits;
     accounts.push({
       id: provider.instanceId,
       driver: provider.driver,

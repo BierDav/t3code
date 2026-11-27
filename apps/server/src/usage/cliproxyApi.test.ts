@@ -35,6 +35,16 @@ const credit = (id: string, expires_at = "2099-01-01T00:00:00Z") => ({
   status: "available",
   reset_type: "codex_rate_limits",
 });
+const claudeOrganizationId = "a916cec8-25e5-4eea-bd1f-708b4fcaee16";
+const decodeClaudeClaim = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      program: Schema.Literal("cedar_ember"),
+      grant_id: Schema.Literal("weekly_grant"),
+      request_id: Schema.String,
+    }),
+  ),
+);
 const RequestBody = Schema.Struct({
   auth_index: Schema.String,
   method: Schema.optional(Schema.String),
@@ -367,29 +377,44 @@ describe("CLIProxyAPI built-in management API", () => {
     }),
   );
 
-  it.effect("maps Claude scoped windows without a scheduler plugin", () =>
+  it.effect("reads Claude reset choices alongside scoped windows without a hub plugin", () =>
     Effect.gen(function* () {
       const test = fixture({
         accounts: [{ ...accounts[0]!, provider: "claude" }],
-        // The usage endpoint answers 429 to requests without a Claude Code user agent.
-        upstream: (request) => ({
-          status: request.header?.["User-Agent"]?.startsWith("claude-code/") ? 200 : 429,
-          body: {
-            five_hour: { utilization: 10, resets_at: null },
-            seven_day: { utilization: 50, resets_at: "2099-01-01T00:00:00Z" },
-            limits: [
-              {
-                kind: "weekly_scoped",
-                percent: 80,
-                resets_at: null,
-                scope: { model: { display_name: "Fable" } },
+        upstream: (request) => {
+          if (request.url === "https://api.anthropic.com/api/oauth/profile") {
+            return { status: 200, body: { organization: { uuid: claudeOrganizationId } } };
+          }
+          expect(request.url).toBe("https://api.anthropic.com/api/oauth/usage?cedar_ember=1");
+          expect(request.header?.["User-Agent"]).toMatch(/^claude-code\//);
+          return {
+            status: 200,
+            body: {
+              five_hour: { utilization: 10, resets_at: null },
+              seven_day: { utilization: 50, resets_at: "2099-01-01T00:00:00Z" },
+              limits: [
+                {
+                  kind: "weekly_scoped",
+                  percent: 80,
+                  resets_at: null,
+                  scope: { model: { display_name: "Fable" } },
+                },
+              ],
+              cedar_ember: {
+                eligible: true,
+                next_grant_id: "week",
+                grants: [
+                  { id: "week", type: "weekly", resets_left: 2, usable_now: true },
+                  { id: "fable", gives_back_weekly: true, resets_left: 1, usable_now: true },
+                ],
               },
-            ],
-          },
-        }),
+            },
+          };
+        },
       });
       const api = yield* test.api;
       const { accounts: result } = yield* api.readAccounts(config);
+      expect(result[0]?.workspaceId).toBe(claudeOrganizationId);
       expect(
         result[0]?.usageLimits.windows.map((window) => [window.id, window.usedPercent]),
       ).toEqual([
@@ -397,6 +422,29 @@ describe("CLIProxyAPI built-in management API", () => {
         ["seven_day", 50],
         ["seven_day_fable", 80],
       ]);
+      expect(result[0]?.usageLimits.resetCredits).toMatchObject({
+        availableCount: 3,
+        nextCreditId: "week",
+        options: [
+          { creditId: "week", label: "Weekly reset", availableCount: 2 },
+          { creditId: "fable", label: "Fable reset", availableCount: 1 },
+        ],
+      });
+    }),
+  );
+
+  it.effect("keeps Claude usage when the hub only supports the plain usage request", () =>
+    Effect.gen(function* () {
+      const test = fixture({
+        accounts: [{ ...accounts[0]!, provider: "claude" }],
+        upstream: (request) =>
+          request.url?.endsWith("/usage")
+            ? { status: 200, body: { five_hour: { utilization: 42, resets_at: null } } }
+            : { status: 404, body: {} },
+      });
+      const { accounts: result } = yield* (yield* test.api).readAccounts(config);
+      expect(result[0]?.usageLimits.windows[0]?.usedPercent).toBe(42);
+      expect(result[0]?.usageLimits.resetCredits).toBeUndefined();
     }),
   );
 
@@ -582,6 +630,46 @@ describe("CLIProxyAPI built-in management API", () => {
       expect(result.outcome).toBe("reset");
       expect(result.warning).toContain("cooldown");
     }),
+  );
+
+  it.effect(
+    "retries the same Claude grant claim after an unconfirmed result, then starts a new one",
+    () =>
+      Effect.gen(function* () {
+        const requestIds: string[] = [];
+        const test = fixture({
+          accounts: [accounts[0]!, { ...accounts[1]!, provider: "claude" }],
+          upstream: (request) => {
+            expect(request.auth_index).toBe("b");
+            if (request.method === "GET") {
+              expect(request.url).toBe("https://api.anthropic.com/api/oauth/profile");
+              return { status: 200, body: { organization: { uuid: claudeOrganizationId } } };
+            }
+            expect(request.url).toBe(
+              `https://api.anthropic.com/api/organizations/${claudeOrganizationId}/reset_rate_limits`,
+            );
+            requestIds.push(decodeClaudeClaim(request.data).request_id);
+            return {
+              status: 200,
+              body: {
+                result: ["unavailable", "already_used", "not_limited"][requestIds.length - 1],
+              },
+            };
+          },
+        });
+        const api = yield* test.api;
+        const consume = () => api.consume(config, "second.json", "weekly_grant");
+        expect((yield* consume().pipe(Effect.result))._tag).toBe("Failure");
+        expect(yield* consume()).toEqual({ outcome: "alreadyRedeemed" });
+        expect(yield* consume()).toEqual({ outcome: "nothingToReset" });
+        expect(requestIds[1]).toBe(requestIds[0]);
+        expect(requestIds[2]).not.toBe(requestIds[0]);
+        expect(
+          test.requests
+            .filter(({ path }) => path.endsWith("/reset-quota"))
+            .map(({ body }) => body?.auth_index),
+        ).toEqual(["b"]);
+      }),
   );
 
   it.effect("skips disabled accounts and rejects redemption on them", () =>
