@@ -11,9 +11,11 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Duration from "effect/Duration";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 import { describe, expect, it } from "@effect/vitest";
 
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
@@ -830,6 +832,7 @@ describe("Prism placement sync", () => {
       const fetched: Array<PrismSyncRequest> = [];
       const state = {
         thread: input.thread,
+        httpDown: false,
         runs: [] as Array<Record<string, unknown>>,
       };
       const layer = Layer.mergeAll(
@@ -878,18 +881,22 @@ describe("Prism placement sync", () => {
           readFileString: () => Effect.succeed("token"),
         } as unknown as FileSystem.FileSystem),
       );
+      const book = makePlacementBook();
       const worker = yield* makePlacementWorker({
         prismStream: input.prismStream ?? false,
+        streamReconnectDelay: () => Duration.zero,
         fetchImpl: async (_url, init) => {
           fetched.push(JSON.parse(String(init?.body)) as PrismSyncRequest);
+          if (state.httpDown) return new Response("try again", { status: 503 });
           return new Response(JSON.stringify(input.response), {
             status: 200,
             headers: { "content-type": "application/json" },
           });
         },
         nowMs: input.nowMs ?? (() => 1_000_000),
-      }).pipe(Effect.provide(layer), Effect.provideService(PlacementBookRef, makePlacementBook()));
+      }).pipe(Effect.provide(layer), Effect.provideService(PlacementBookRef, book));
       return {
+        book,
         worker,
         dispatched,
         fetched,
@@ -1022,15 +1029,16 @@ describe("Prism placement sync", () => {
       const { factory } = fakeSocketFactory((socket) => {
         Queue.offerUnsafe(created, socket);
       });
-      const { worker, dispatched, fetched } = yield* harness({
+      const { book, worker, dispatched, fetched, state } = yield* harness({
         thread: liveThread({}),
         response: codingResponse([]),
         prismStream: factory,
       });
 
-      // Before the stream is up, the sync goes over HTTP.
+      // Use HTTP during startup without showing a lost-connection warning.
       yield* worker.sweep();
       expect(fetched).toHaveLength(1);
+      expect(yield* SubscriptionRef.get(book.prismConnection)).toBeNull();
       const socket = yield* Queue.take(created);
       socket.answer = (request) => ({
         jsonrpc: "2.0",
@@ -1044,6 +1052,7 @@ describe("Prism placement sync", () => {
       expect(connected.kind).toBe("connected");
       yield* worker.sweep(connected);
       expect(fetched).toHaveLength(1);
+      expect(yield* SubscriptionRef.get(book.prismConnection)).toBe("connected");
       expect(socket.sent).toHaveLength(1);
       expect(socket.sent[0]).toMatchObject({ method: "placement.sync" });
 
@@ -1063,12 +1072,42 @@ describe("Prism placement sync", () => {
         "run.interrupt",
       ]);
 
-      // The acknowledgement goes out on the next tick, not 30 seconds later.
-      yield* worker.sweep();
+      const ack = yield* Queue.take(worker.triggers);
+      expect(ack.kind).toBe("changed");
+      yield* worker.sweep(ack);
       expect(socket.sent).toHaveLength(2);
       const acked = socket.sent[1]?.params as PrismSyncRequest | undefined;
       expect(acked?.moves).toEqual([{ id: davidToOne.id, state: "continued" }]);
       expect(fetched).toHaveLength(1);
+
+      socket.close();
+      const lost = yield* Queue.take(worker.triggers);
+      expect(lost.kind).toBe("stream-error");
+      yield* worker.sweep(lost);
+      expect(yield* SubscriptionRef.get(book.prismConnection)).toBe("http");
+      expect(fetched).toHaveLength(2);
+
+      state.httpDown = true;
+      const reconnect = yield* Queue.take(created);
+      reconnect.answer = (request) => ({
+        jsonrpc: "2.0",
+        id: request.id,
+        error: { code: -32000, message: "Placement sync failed; try again." },
+      });
+      reconnect.open();
+      yield* worker.sweep(yield* Queue.take(worker.triggers));
+      expect(yield* SubscriptionRef.get(book.prismConnection)).toBe("offline");
+      expect(book.remoteCheckedAt).toBe(0);
+
+      reconnect.answer = (request) => ({
+        jsonrpc: "2.0",
+        id: request.id,
+        result: codingResponse([]),
+      });
+      reconnect.receive({ jsonrpc: "2.0", method: "placement.update", params: codingResponse([]) });
+      yield* worker.sweep(yield* Queue.take(worker.triggers));
+      expect(yield* SubscriptionRef.get(book.prismConnection)).toBe("connected");
+      expect(book.remoteCheckedAt).toBeGreaterThan(0);
       yield* worker.close;
     }),
   );

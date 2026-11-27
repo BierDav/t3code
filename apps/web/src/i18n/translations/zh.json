@@ -13041,5 +13041,8 @@
       "v": "v"
     },
     " 项"
-  ]
+  ],
+  "b66fdba091c5a3ca": "{hosts}：T3 Code 将使用已保存的配置方案和本地用量数据。",
+  "f81eb6f16ff89be3": "{hosts}：T3 Code 正通过 HTTP 与 Prism 同步。",
+  "dccd74901dc3c91a": "与 Prism 的连接已断开"
 }

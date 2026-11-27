@@ -13034,5 +13034,8 @@
       "v": "v"
     },
     " till i Länkade objekt"
-  ]
+  ],
+  "b66fdba091c5a3ca": "{hosts}: T3 Code använder sparade profiler och lokala användningsdata.",
+  "f81eb6f16ff89be3": "{hosts}: T3 Code synkroniserar med Prism via HTTP.",
+  "dccd74901dc3c91a": "Anslutningen till Prism bröts"
 }

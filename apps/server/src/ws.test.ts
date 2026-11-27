@@ -244,6 +244,39 @@ it.effect("resends late editors without rolling back updates already sent", () =
   }),
 );
 
+it.effect("reports a Prism outage and recovery without changing the model catalog", () =>
+  Effect.gen(function* () {
+    const providers = [
+      { instanceId: "claudeAgent" },
+      { instanceId: "placement" },
+    ] as unknown as ServerConfig["providers"];
+    const snapshots = yield* withLateConfigDiscovery(
+      snapshotConfig({ providers, prismConnection: "connected" }),
+      Stream.make(
+        { type: "prismConnectionChanged", status: "offline" },
+        { type: "prismConnectionChanged", status: "offline" },
+        { type: "prismConnectionChanged", status: "connected" },
+      ),
+      {
+        resolveAvailableEditors: () => Effect.succeed([]),
+        resolveFileManagerRevealKind: () => Effect.undefined,
+      },
+      { resolveTargets: () => Effect.succeed([]) },
+      { resolve: () => Effect.succeed([]) },
+    ).pipe(Stream.runCollect);
+    assert.deepEqual(
+      Array.from(snapshots).map(
+        (event) =>
+          event.type === "snapshot" && [event.config.prismConnection, event.config.providers],
+      ),
+      [
+        ["offline", providers],
+        ["connected", providers],
+      ],
+    );
+  }),
+);
+
 it.effect("resends a reveal kind and remote targets that outlast the snapshot timeout", () =>
   Effect.gen(function* () {
     const targets = [{ kind: "mdns" as const, host: "test.local" }];

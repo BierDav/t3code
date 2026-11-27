@@ -2,6 +2,7 @@ import type {
   ModelSelection,
   PlacementMove,
   PlacementProfileDecision,
+  PrismConnectionStatus,
   ProjectId,
   ServerProvider,
   ServerSettings,
@@ -17,6 +18,8 @@ import {
 } from "@t3tools/shared/placement";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 
 const HOUR = 3_600_000;
 /** How far back session readings count toward an account's burn rate. */
@@ -47,6 +50,7 @@ export interface PlacementBook {
   readonly limitedUntilByAccount: Map<string, number>;
   readonly remoteDecisions: Map<string, PlacementProfileDecision>;
   remoteCheckedAt: number;
+  readonly prismConnection: SubscriptionRef.SubscriptionRef<PrismConnectionStatus | null>;
   checkedAt: number;
 }
 
@@ -60,6 +64,7 @@ export function makePlacementBook(): PlacementBook {
     limitedUntilByAccount: new Map(),
     remoteDecisions: new Map(),
     remoteCheckedAt: 0,
+    prismConnection: Effect.runSync(SubscriptionRef.make<PrismConnectionStatus | null>(null)),
     checkedAt: 0,
   };
 }

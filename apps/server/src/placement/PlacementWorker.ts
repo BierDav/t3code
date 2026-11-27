@@ -31,6 +31,8 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
@@ -58,6 +60,7 @@ import {
   decisionsFromPrismResponse,
   decodePrismStreamResponse,
   type PrismMoveAck,
+  type PrismSyncRequest,
   type PrismSyncResponse,
   profilesFromPrismResponse,
   syncOverStream,
@@ -96,6 +99,7 @@ interface QueuedMove extends Move {
 export type PlacementTrigger =
   | { readonly kind: "pushed"; readonly response: unknown }
   | { readonly kind: "connected" }
+  | { readonly kind: "changed" }
   | { readonly kind: "stream-error"; readonly cause: unknown };
 
 const label = (selection: ModelSelection) => selection.model;
@@ -178,6 +182,7 @@ export const makePlacementWorker = Effect.fn("PlacementWorker.make")(function* (
   const pendingAcks: PrismMoveAck[] = [];
   const handledPrismMoves = new Set<string>();
   let lastSweepMs = 0;
+  let lastReport: Omit<PrismSyncRequest, "moves"> | null = null;
   let lastPrismAnswerMs = 0;
   let lastProfileFingerprint = "";
 
@@ -497,6 +502,8 @@ export const makePlacementWorker = Effect.fn("PlacementWorker.make")(function* (
     const current = stream;
     stream = null;
     streamKey = "";
+    lastReport = null;
+    book.remoteCheckedAt = 0;
     return current === null ? Effect.void : Scope.close(current.scope, Exit.void);
   });
 
@@ -505,6 +512,7 @@ export const makePlacementWorker = Effect.fn("PlacementWorker.make")(function* (
 
   const sweepOnce = Effect.fn("PlacementWorker.sweep")(function* (trigger?: PlacementTrigger) {
     const nowMs = options?.nowMs ? options.nowMs() : DateTime.toEpochMillis(yield* DateTime.now);
+    const oldConnection = yield* SubscriptionRef.get(book.prismConnection);
     if (trigger?.kind === "stream-error") {
       if (nowMs - lastStreamErrorLogMs >= STREAM_ERROR_LOG_EVERY_MS) {
         lastStreamErrorLogMs = nowMs;
@@ -512,12 +520,18 @@ export const makePlacementWorker = Effect.fn("PlacementWorker.make")(function* (
           cause: trigger.cause,
         });
       }
-      return;
+      if (oldConnection !== "connected" && oldConnection !== null) return;
+      book.remoteCheckedAt = 0;
+      yield* SubscriptionRef.set(book.prismConnection, "offline");
     }
     const settings = yield* settingsService.getSettings;
     const source = settings.placementSource;
     const prismEnabled = source !== null && source.enabled;
     yield* syncStream(prismEnabled ? source : null);
+    if (!prismEnabled && oldConnection !== null) {
+      book.remoteCheckedAt = 0;
+      yield* SubscriptionRef.set(book.prismConnection, null);
+    }
     const shell = yield* projections.getShellSnapshot({ location: "active" });
     yield* settleQueuedMoves(shell.threads);
     // Share provider rejections across all profile paths before a slow Prism request.
@@ -557,9 +571,19 @@ export const makePlacementWorker = Effect.fn("PlacementWorker.make")(function* (
       (profileStateChanged || (streamOpen && pendingAcks.length > 0)) &&
       (streamOpen || nowMs - lastPrismAnswerMs >= SWEEP_EVERY_MS);
     const dueByConnect = prismEnabled && trigger?.kind === "connected";
-    if (pushed === null && !dueByInterval && !dueByPrismEvent && !dueByConnect) return;
+    const dueByDisconnect = prismEnabled && trigger?.kind === "stream-error";
+    const dueByChange = prismEnabled && streamOpen && trigger?.kind === "changed";
+    if (
+      pushed === null &&
+      !dueByInterval &&
+      !dueByPrismEvent &&
+      !dueByConnect &&
+      !dueByDisconnect &&
+      !dueByChange
+    )
+      return;
     if (pushed === null) {
-      lastSweepMs = nowMs;
+      if (dueByInterval || dueByConnect || dueByDisconnect) lastSweepMs = nowMs;
       lastProfileFingerprint = fingerprint;
     }
 
@@ -573,6 +597,7 @@ export const makePlacementWorker = Effect.fn("PlacementWorker.make")(function* (
 
     let activeSettings = settings;
     let prismResponse: PrismSyncResponse | null = pushed;
+    let connection = pushed === null ? oldConnection : ("connected" as const);
     if (prismEnabled && pushed === null) {
       const environmentId = Option.isSome(envIdentity)
         ? yield* envIdentity.value.getEnvironmentId
@@ -588,6 +613,15 @@ export const makePlacementWorker = Effect.fn("PlacementWorker.make")(function* (
         moves: acksToSend,
         nowMs,
       });
+      const { moves: _acks, ...report } = body;
+      if (
+        dueByChange &&
+        !dueByInterval &&
+        !dueByConnect &&
+        !dueByPrismEvent &&
+        Equal.equals(report, lastReport)
+      )
+        return;
       const overHttp = syncWithPrism({
         source,
         body,
@@ -595,22 +629,44 @@ export const makePlacementWorker = Effect.fn("PlacementWorker.make")(function* (
         fetchImpl: options?.fetchImpl,
       });
       const openStream = stream?.client;
-      prismResponse = yield* (
+      const streamed =
         openStream !== undefined && openStream.isOpen()
-          ? syncOverStream({ stream: openStream, body }).pipe(
+          ? yield* syncOverStream({ stream: openStream, body }).pipe(
               Effect.catchCause((cause) =>
-                Effect.logInfo("placement.prism-stream-sync-failed; trying HTTP", {
-                  cause,
-                }).pipe(Effect.andThen(overHttp)),
+                Effect.logInfo("placement.prism-stream-sync-failed; trying HTTP", { cause }).pipe(
+                  Effect.as(null),
+                ),
               ),
             )
-          : overHttp
-      ).pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("placement.prism-sync-failed", { cause }).pipe(Effect.as(null)),
-        ),
-      );
-      if (prismResponse !== null) pendingAcks.splice(0, acksToSend.length);
+          : null;
+      if (streamed !== null) {
+        prismResponse = streamed;
+        connection = "connected";
+      } else {
+        prismResponse = yield* overHttp.pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("placement.prism-sync-failed", { cause }).pipe(Effect.as(null)),
+          ),
+        );
+        connection =
+          prismResponse === null
+            ? "offline"
+            : oldConnection === null &&
+                trigger?.kind !== "stream-error" &&
+                openStream !== undefined &&
+                !streamOpen
+              ? null
+              : "http";
+      }
+      if (prismResponse !== null) {
+        pendingAcks.splice(0, acksToSend.length);
+        lastReport = report;
+      } else {
+        book.remoteCheckedAt = 0;
+      }
+    }
+    if (prismEnabled && (yield* SubscriptionRef.get(book.prismConnection)) !== connection) {
+      yield* SubscriptionRef.set(book.prismConnection, connection);
     }
     if (prismResponse !== null) {
       lastPrismAnswerMs = nowMs;
@@ -977,9 +1033,22 @@ export const makePlacementWorker = Effect.fn("PlacementWorker.make")(function* (
     }
   });
 
+  const sweepAndAcknowledge = Effect.fnUntraced(function* (trigger?: PlacementTrigger) {
+    const before = pendingAcks.length;
+    yield* sweepOnce(trigger);
+    if (pendingAcks.length > before && stream?.client.isOpen() === true) {
+      yield* Queue.offer(triggers, { kind: "changed" });
+    }
+  });
   return {
-    /** One sweep; a trigger is what woke it besides the scheduler. Sweeps never overlap. */
-    sweep: (trigger?: PlacementTrigger) => lock.withPermits(1)(sweepOnce(trigger)),
+    /** Sweeps never overlap. */
+    sweep: (trigger?: PlacementTrigger) => lock.withPermits(1)(sweepAndAcknowledge(trigger)),
+    heartbeat: lock.withPermits(1)(
+      Effect.gen(function* () {
+        const now = options?.nowMs?.() ?? DateTime.toEpochMillis(yield* DateTime.now);
+        if (lastSweepMs === 0 || now - lastSweepMs >= SWEEP_EVERY_MS) yield* sweepAndAcknowledge();
+      }),
+    ),
     /** Wakes from the Prism stream: a pushed answer, a new connection, a failure. */
     triggers: triggers as Queue.Dequeue<PlacementTrigger>,
     close: closeStream,
@@ -995,7 +1064,53 @@ export const layer = Layer.effectDiscard(
     const worker = yield* makePlacementWorker();
     yield* Effect.addFinalizer(() => worker.close);
     const scheduler = yield* Scheduler.Scheduler;
-    yield* scheduler.register("placement", worker.sweep());
+    yield* scheduler.register("placement", worker.heartbeat);
+    const registry = yield* ProviderRegistry.ProviderRegistry;
+    const usage = yield* UsageLimitSources.UsageLimitSources;
+    const events = yield* EventSink.EventSinkV2;
+    const settings = yield* ServerSettings.ServerSettingsService;
+    const settingsChanges = yield* settings.subscribeChanges;
+    yield* forkParked(
+      Stream.mergeAll(
+        [
+          events.stream().pipe(
+            Stream.filter(
+              ({ event }) =>
+                event.type === "run.created" ||
+                event.type === "run.updated" ||
+                event.type === "thread.created" ||
+                event.type === "thread.archived" ||
+                event.type === "thread.unarchived" ||
+                event.type === "thread.deleted" ||
+                event.type === "thread.tags-updated" ||
+                event.type === "thread.metadata-updated" ||
+                event.type === "thread.model-selection-updated",
+            ),
+            Stream.as(undefined),
+            Stream.catchCause((cause) =>
+              Stream.fromEffect(
+                Effect.logWarning("placement.thread-observation-failed", { cause }),
+              ),
+            ),
+          ),
+          registry.streamChanges.pipe(Stream.as(undefined)),
+          usage.streamChanges.pipe(Stream.as(undefined)),
+          settingsChanges.pipe(Stream.as(undefined)),
+        ],
+        { concurrency: "unbounded" },
+      ).pipe(
+        Stream.groupedWithin(25, "100 millis"),
+        Stream.runForEach(() =>
+          worker
+            .sweep({ kind: "changed" })
+            .pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("placement.triggered-sweep-failed", { cause }),
+              ),
+            ),
+        ),
+      ),
+    );
     // Prism's pushes are carried out the moment they arrive, not at the next tick.
     yield* forkParked(
       Queue.take(worker.triggers).pipe(

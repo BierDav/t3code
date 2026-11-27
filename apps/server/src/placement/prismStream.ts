@@ -110,7 +110,10 @@ function parseMessage(data: unknown): RpcMessage | null {
 export const openPrismStream = Effect.fn("placement.openPrismStream")(function* (
   options: PrismStreamOptions,
 ): Effect.fn.Return<PrismStream, never, Scope.Scope> {
-  let socket: PrismSocket | null = null;
+  let connection: {
+    readonly socket: PrismSocket;
+    readonly events: Queue.Queue<SocketEvent>;
+  } | null = null;
   let nextId = 1;
   const calls = new Map<number, Deferred.Deferred<unknown, PrismStreamError>>();
   const failCalls = (message: string) =>
@@ -122,7 +125,7 @@ export const openPrismStream = Effect.fn("placement.openPrismStream")(function* 
       },
       { discard: true },
     );
-  const isOpen = () => socket !== null && socket.readyState === OPEN;
+  const isOpen = () => connection?.socket.readyState === OPEN;
 
   const receive = Effect.fnUntraced(function* (data: unknown) {
     const message = parseMessage(data);
@@ -174,27 +177,40 @@ export const openPrismStream = Effect.fn("placement.openPrismStream")(function* 
     opened.addEventListener("error", () => {
       Queue.offerUnsafe(events, { type: "closed", failed: true });
     });
-    socket = opened;
+    connection = { socket: opened, events };
     let wasOpen = false;
     return yield* Effect.gen(function* () {
       for (;;) {
-        const event = yield* Queue.take(events);
+        const event = yield* wasOpen
+          ? Queue.take(events)
+          : Queue.take(events).pipe(
+              Effect.timeoutOrElse({
+                duration: CALL_TIMEOUT,
+                orElse: () =>
+                  Effect.fail(
+                    new PrismStreamError({ message: "Prism did not open the stream in time." }),
+                  ),
+              }),
+            );
         if (event.type === "open") {
           wasOpen = true;
           yield* options.onOpen;
         } else if (event.type === "message") {
           yield* receive(event.data);
         } else {
-          if (event.failed) {
-            yield* options.onError(new PrismStreamError({ message: "The Prism stream failed." }));
-          }
+          connection = null;
+          yield* options.onError(
+            new PrismStreamError({
+              message: event.failed ? "The Prism stream failed." : "The Prism stream closed.",
+            }),
+          );
           return wasOpen;
         }
       }
     }).pipe(
       Effect.ensuring(
         Effect.suspend(() => {
-          socket = null;
+          connection = null;
           try {
             opened.close(1000, "closing");
           } catch {
@@ -221,8 +237,8 @@ export const openPrismStream = Effect.fn("placement.openPrismStream")(function* 
   );
 
   const call = Effect.fn("PrismStream.call")(function* (params: unknown) {
-    const current = socket;
-    if (current === null || !isOpen()) {
+    const current = connection;
+    if (current === null || current.socket.readyState !== OPEN) {
       return yield* new PrismStreamError({ message: "The Prism stream is not connected." });
     }
     const id = nextId++;
@@ -234,16 +250,24 @@ export const openPrismStream = Effect.fn("placement.openPrismStream")(function* 
       ),
       Effect.flatMap((frame) =>
         Effect.try({
-          try: () => current.send(frame),
+          try: () => current.socket.send(frame),
           catch: (cause) =>
             new PrismStreamError({ message: `Sending to Prism failed: ${String(cause)}` }),
-        }),
+        }).pipe(
+          Effect.tapError(() => Queue.offer(current.events, { type: "closed", failed: true })),
+        ),
       ),
       Effect.andThen(Deferred.await(deferred)),
       Effect.timeoutOrElse({
         duration: CALL_TIMEOUT,
         orElse: () =>
-          Effect.fail(new PrismStreamError({ message: "Prism did not answer the sync in time." })),
+          Queue.offer(current.events, { type: "closed", failed: true }).pipe(
+            Effect.andThen(
+              Effect.fail(
+                new PrismStreamError({ message: "Prism did not answer the sync in time." }),
+              ),
+            ),
+          ),
       }),
       Effect.ensuring(Effect.sync(() => calls.delete(id))),
     );

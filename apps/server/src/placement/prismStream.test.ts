@@ -120,12 +120,41 @@ describe("openPrismStream", () => {
       const lost = yield* Fiber.join(waiting);
       expect(lost?.message).toBe("The Prism stream closed.");
       expect(stream.isOpen()).toBe(false);
+      expect(yield* Queue.take(events)).toEqual({ kind: "error" });
 
       yield* TestClock.adjust(Duration.seconds(1));
       const again = yield* Queue.take(created);
       again.open();
       expect(yield* Queue.take(events)).toEqual({ kind: "open" });
       expect(stream.isOpen()).toBe(true);
+      yield* Scope.close(scope, Exit.void);
+    }),
+  );
+
+  it.effect("replaces a socket that stays open without answering a sync", () =>
+    Effect.gen(function* () {
+      const { created, events, scope, socket, stream } = yield* open;
+      socket.open();
+      expect(yield* Queue.take(events)).toEqual({ kind: "open" });
+
+      const sent = yield* Queue.unbounded<unknown>();
+      socket.answer = (request) => {
+        Queue.offerUnsafe(sent, request);
+        return undefined;
+      };
+      const waiting = yield* Effect.forkChild(failureOf(stream.call({ v: 1 })));
+      yield* Queue.take(sent);
+      yield* TestClock.adjust(Duration.seconds(20));
+      expect((yield* Fiber.join(waiting))?.message).toBe("Prism did not answer the sync in time.");
+      expect(yield* Queue.take(events)).toEqual({ kind: "error" });
+      expect(stream.isOpen()).toBe(false);
+
+      yield* TestClock.adjust(Duration.seconds(1));
+      const again = yield* Queue.take(created);
+      again.open();
+      expect(yield* Queue.take(events)).toEqual({ kind: "open" });
+      again.answer = (request) => ({ jsonrpc: "2.0", id: request.id, result: { v: 1 } });
+      expect(yield* stream.call({ v: 1 })).toEqual({ v: 1 });
       yield* Scope.close(scope, Exit.void);
     }),
   );

@@ -13035,5 +13035,8 @@
       "v": "v"
     },
     " more in Linked items"
-  ]
+  ],
+  "b66fdba091c5a3ca": "{hosts}: T3 Code will use saved profiles and local usage data.",
+  "f81eb6f16ff89be3": "{hosts}: T3 Code is syncing with Prism over HTTP.",
+  "dccd74901dc3c91a": "Prism connection lost"
 }

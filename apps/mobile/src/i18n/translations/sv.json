@@ -5713,5 +5713,8 @@
   "99451a5d2d40440f": "Återkallad av {by}.",
   "3ee30a50b70fffab": "Återkallad av {by}: {reason}",
   "201490988858b511": "återkallad av {by}",
-  "46d614fa7b4bf1e5": "Arbetsflödeskörningar"
+  "46d614fa7b4bf1e5": "Arbetsflödeskörningar",
+  "b66fdba091c5a3ca": "{hosts}: T3 Code använder sparade profiler och lokala användningsdata.",
+  "f81eb6f16ff89be3": "{hosts}: T3 Code synkroniserar med Prism via HTTP.",
+  "dccd74901dc3c91a": "Anslutningen till Prism bröts"
 }

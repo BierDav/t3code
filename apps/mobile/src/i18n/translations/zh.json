@@ -5694,5 +5694,8 @@
   "99451a5d2d40440f": "已由 {by} 撤回。",
   "3ee30a50b70fffab": "已由 {by} 撤回：{reason}",
   "201490988858b511": "已由 {by} 撤回",
-  "46d614fa7b4bf1e5": "工作流运行"
+  "46d614fa7b4bf1e5": "工作流运行",
+  "b66fdba091c5a3ca": "{hosts}：T3 Code 将使用已保存的配置方案和本地用量数据。",
+  "f81eb6f16ff89be3": "{hosts}：T3 Code 正通过 HTTP 与 Prism 同步。",
+  "dccd74901dc3c91a": "与 Prism 的连接已断开"
 }

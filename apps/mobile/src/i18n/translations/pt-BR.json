@@ -5707,5 +5707,8 @@
   "99451a5d2d40440f": "Retirada por {by}.",
   "3ee30a50b70fffab": "Retirada por {by}: {reason}",
   "201490988858b511": "retirada por {by}",
-  "46d614fa7b4bf1e5": "Execuções de workflow"
+  "46d614fa7b4bf1e5": "Execuções de workflow",
+  "b66fdba091c5a3ca": "{hosts}: o T3 Code usará os perfis salvos e os dados de uso locais.",
+  "f81eb6f16ff89be3": "{hosts}: o T3 Code está sincronizando com o Prism por HTTP.",
+  "dccd74901dc3c91a": "A conexão com o Prism foi perdida"
 }

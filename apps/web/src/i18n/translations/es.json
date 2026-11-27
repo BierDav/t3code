@@ -13022,5 +13022,8 @@
       "v": "v"
     },
     " más en Elementos vinculados"
-  ]
+  ],
+  "b66fdba091c5a3ca": "{hosts}: T3 Code usará los perfiles guardados y los datos de uso locales.",
+  "f81eb6f16ff89be3": "{hosts}: T3 Code se está sincronizando con Prism por HTTP.",
+  "dccd74901dc3c91a": "Se perdió la conexión con Prism"
 }

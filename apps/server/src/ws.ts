@@ -25,6 +25,7 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 import { rpcInitialItems } from "./rpcInitialItems.ts";
 import { subscribeChatGptHandoff } from "./provider/CodexChatGptHandoff.ts";
 import {
@@ -93,6 +94,7 @@ import {
   type RelayClientInstallProgressEvent,
   type ServerConfig as ClientServerConfig,
   type ServerConfigStreamEvent,
+  type PrismConnectionStatus,
   type ServerLifecycleStreamEvent,
   type ServerProvider,
   serverProviderDeltas,
@@ -293,6 +295,7 @@ import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 import { isNetworkPath } from "@t3tools/shared/path";
 import { withPlacementProvider } from "@t3tools/shared/placement";
+import { PlacementBookRef } from "./placement/PlacementBook.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
 import {
   SOCKET_FRAME_PARTS_QUERY_PARAM,
@@ -353,7 +356,12 @@ const resolveEditorConfig = Effect.fn("ws.resolveEditorConfig")(function* <E, R>
 
 export const withLateConfigDiscovery = <E, R>(
   config: ClientServerConfig,
-  liveUpdates: Stream.Stream<ServerConfigStreamEvent, E, R>,
+  liveUpdates: Stream.Stream<
+    | ServerConfigStreamEvent
+    | { readonly type: "prismConnectionChanged"; readonly status: PrismConnectionStatus | null },
+    E,
+    R
+  >,
   launcher: EditorDiscovery,
   remoteOpenTargets: RemoteOpenTargets.RemoteOpenTargets["Service"],
   directEndpoints: Pick<DirectEndpoints.DirectEndpoints["Service"], "resolve">,
@@ -416,6 +424,12 @@ export const withLateConfigDiscovery = <E, R>(
               return [current, []];
             }
             const next = { ...current, directEndpoints: event.endpoints };
+            return [next, [{ version: 1, type: "snapshot", config: next }]];
+          }
+          case "prismConnectionChanged": {
+            if (event.status === (current.prismConnection ?? null)) return [current, []];
+            const { prismConnection: _previous, ...rest } = current;
+            const next = event.status === null ? rest : { ...rest, prismConnection: event.status };
             return [next, [{ version: 1, type: "snapshot", config: next }]];
           }
           case "keybindingsUpdated":
@@ -1483,6 +1497,7 @@ export const layerWsRpc = (
       const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
       const scratchThreadPromotion = yield* ScratchThreadPromotion.ScratchThreadPromotion;
       const eventLoopMonitor = yield* EventLoopMonitor.EventLoopMonitor;
+      const { prismConnection } = yield* PlacementBookRef;
       const threadSearch = yield* ThreadSearch.ThreadSearch;
 
       const providerSessionsV2 = yield* ProviderSessionManager.ProviderSessionManagerV2;
@@ -1916,6 +1931,7 @@ export const layerWsRpc = (
         const auth = yield* serverAuth.getDescriptor();
         const scratchWorkspaceRoot = yield* managedFolders.scratchRoot;
         const lastEventLoopStall = yield* eventLoopMonitor.latestNoticeableStall;
+        const prismStatus = yield* SubscriptionRef.get(prismConnection);
         const discovery = yield* resolveOpenDiscoveryForConfig({
           editors: externalLauncher.resolveAvailableEditors(),
           fileManagerRevealKind: externalLauncher.resolveFileManagerRevealKind(),
@@ -1936,6 +1952,7 @@ export const layerWsRpc = (
           keybindings: keybindingsConfig.keybindings,
           issues: keybindingsConfig.issues,
           providers,
+          ...(prismStatus === null ? {} : { prismConnection: prismStatus }),
           ...discovery,
           observability: {
             logsDirectoryPath: config.logsDir,
@@ -3725,7 +3742,12 @@ export const layerWsRpc = (
                   : config;
               const updates = withLateConfigDiscovery(
                 initialConfig,
-                liveUpdates,
+                Stream.merge(
+                  liveUpdates,
+                  SubscriptionRef.changes(prismConnection).pipe(
+                    Stream.map((status) => ({ type: "prismConnectionChanged" as const, status })),
+                  ),
+                ),
                 externalLauncher,
                 {
                   resolveTargets: () => Fiber.join(remoteTargets),

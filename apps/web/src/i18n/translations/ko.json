@@ -12960,5 +12960,8 @@
       "v": "v"
     },
     "개 더 보기"
-  ]
+  ],
+  "b66fdba091c5a3ca": "{hosts}: T3 Code가 저장된 프로필과 로컬 사용량 데이터를 사용합니다.",
+  "f81eb6f16ff89be3": "{hosts}: T3 Code가 HTTP를 통해 Prism과 동기화 중입니다.",
+  "dccd74901dc3c91a": "Prism 연결이 끊어졌습니다"
 }
