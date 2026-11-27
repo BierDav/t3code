@@ -26,6 +26,7 @@ import {
   placementWaitsForReset,
   placementTag,
   rankPlacementProfile,
+  resolvePlacementProfileId,
   usableHours,
   withPlacementInstanceSetting,
   withPlacementProvider,
@@ -402,6 +403,20 @@ describe("placement tags", () => {
   it("round-trips the profile id", () => {
     expect(placementProfileOfTags(["x", placementTag("review")])).toBe("review");
     expect(placementProfileOfTags(["x"])).toBeNull();
+  });
+
+  it("finds a profile by id or by its label in any case", () => {
+    const entries: PlacementProfile["entries"] = [];
+    const profiles = {
+      "610e2742": { label: "Anthropic", entries },
+      review: { label: "Review", entries },
+      a: { label: "Twin", entries },
+      b: { label: "twin", entries },
+    };
+    expect(resolvePlacementProfileId(profiles, "review")).toBe("review");
+    expect(resolvePlacementProfileId(profiles, "anthropic")).toBe("610e2742");
+    expect(resolvePlacementProfileId(profiles, "twin")).toBeNull();
+    expect(resolvePlacementProfileId(profiles, "google")).toBeNull();
   });
 });
 

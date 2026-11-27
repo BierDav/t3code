@@ -33,6 +33,25 @@ export function placementProfileOfTags(tags: ReadonlyArray<string> | undefined):
   return id ? id : null;
 }
 
+/** The profile a caller names by id, or by its label in any case. Null when none or several match. */
+export function resolvePlacementProfileId(
+  profiles: ServerSettings["placementProfiles"],
+  requested: string,
+): string | null {
+  if (profiles[requested] !== undefined) return requested;
+  const wanted = requested.trim().toLowerCase();
+  const matches = Object.entries(profiles).filter(
+    ([, profile]) => profile.label.trim().toLowerCase() === wanted,
+  );
+  return matches.length === 1 ? matches[0]![0] : null;
+}
+
+/** What an agent can pass as a profile, for errors that name an unknown one. */
+export function placementProfileChoices(profiles: ServerSettings["placementProfiles"]): string {
+  const choices = Object.entries(profiles).map(([id, profile]) => `"${id}" (${profile.label})`);
+  return choices.length === 0 ? "none are configured" : choices.join(", ");
+}
+
 export function placementTag(profileId: string): string {
   return `${PLACEMENT_TAG_PREFIX}${profileId}`;
 }

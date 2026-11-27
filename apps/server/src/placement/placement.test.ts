@@ -59,27 +59,30 @@ const settings: ServerSettings = {
 
 describe("launchProfileId", () => {
   it("prefers the requested profile, then the role's, then the parent's", () => {
-    expect(launchProfileId({ settings, requested: "coding", role: "review" })).toBe("coding");
-    expect(launchProfileId({ settings, role: "review", parentProfile: "coding" })).toBe("review");
-    expect(launchProfileId({ settings, role: "research", parentProfile: "coding" })).toBe("coding");
-    expect(launchProfileId({ settings, role: "research" })).toBeNull();
+    const pinned = false;
+    expect(launchProfileId({ settings, requested: "coding", role: "review", pinned })).toBe(
+      "coding",
+    );
+    expect(launchProfileId({ settings, role: "review", parentProfile: "coding", pinned })).toBe(
+      "review",
+    );
+    expect(launchProfileId({ settings, role: "research", parentProfile: "coding", pinned })).toBe(
+      "coding",
+    );
+    expect(launchProfileId({ settings, role: "research", pinned })).toBeNull();
   });
 
-  it("lets an explicit model outside the profile opt out", () => {
+  it("puts a pinned model in no profile, even one that lists it", () => {
     expect(
-      launchProfileId({ settings, parentProfile: "coding", explicitModel: claude("other/x") }),
+      launchProfileId({ settings, role: "review", parentProfile: "coding", pinned: true }),
     ).toBeNull();
     expect(
-      launchProfileId({
-        settings,
-        parentProfile: "coding",
-        explicitModel: claude("claude-david/x"),
-      }),
-    ).toBe("coding");
+      launchProfileId({ settings, requested: "", parentProfile: "coding", pinned: false }),
+    ).toBeNull();
   });
 
   it("ignores a profile that is not configured", () => {
-    expect(launchProfileId({ settings, requested: "gone" })).toBeNull();
+    expect(launchProfileId({ settings, requested: "gone", pinned: false })).toBeNull();
   });
 });
 

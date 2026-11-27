@@ -147,7 +147,7 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     placementProfile: Schema.optional(
       Schema.String.annotate({
         description:
-          "Placement profile id: the scheduler picks the model now and moves the thread between accounts later. Not with `modelSelection`.",
+          "A profile's id or label from `orchestrator_capabilities.placement.profiles`: the scheduler picks the model now and moves the thread between accounts later. Not with `modelSelection`.",
       }),
     ),
     runtimeMode: Schema.optional(RuntimeMode),

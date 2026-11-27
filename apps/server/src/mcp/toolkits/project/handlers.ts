@@ -23,7 +23,11 @@ import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts"
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import { launchSelection } from "../../../placement/placementLaunch.ts";
-import { placementTag } from "@t3tools/shared/placement";
+import {
+  placementProfileChoices,
+  placementTag,
+  resolvePlacementProfileId,
+} from "@t3tools/shared/placement";
 import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
 import * as Project from "../../../project/ProjectService.ts";
 import * as ProjectCloneTracker from "../../../project/ProjectCloneTracker.ts";
@@ -435,26 +439,37 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
         // within the ceiling it was approved with.
         const projectDefaults = caller === undefined ? projectSettings : undefined;
         const placementSettings =
-          input.placementProfile === undefined || replaying
+          input.placementProfile === undefined || input.placementProfile === "" || replaying
             ? null
             : yield* ServerSettings.ServerSettingsService.pipe(
                 Effect.flatMap((settings) => settings.getSettings),
                 Effect.mapError(unavailable),
               );
-        if (
-          placementSettings !== null &&
-          placementSettings.placementProfiles[input.placementProfile!] === undefined
-        ) {
+        if (placementSettings !== null && input.modelSelection !== undefined) {
           return yield* new OrchestratorMcpFailure({
             code: "invalid_request",
-            message: `No placement profile "${input.placementProfile}". orchestrator_capabilities lists them.`,
+            message:
+              "Pass `placementProfile` or `modelSelection`, not both: a profile picks the model, a selection pins one.",
+          });
+        }
+        const placementProfileId =
+          placementSettings === null
+            ? null
+            : resolvePlacementProfileId(
+                placementSettings.placementProfiles,
+                input.placementProfile!,
+              );
+        if (placementSettings !== null && placementProfileId === null) {
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: `No placement profile "${input.placementProfile}". Pass one of: ${placementProfileChoices(placementSettings.placementProfiles)}.`,
           });
         }
         const placedSelection =
-          placementSettings === null || input.modelSelection !== undefined
+          placementProfileId === null || placementSettings === null
             ? null
             : yield* launchSelection({
-                profileId: input.placementProfile!,
+                profileId: placementProfileId,
                 settings: placementSettings,
                 providers: yield* ProviderRegistry.ProviderRegistry.pipe(
                   Effect.flatMap((registry) => registry.getProviders),
@@ -556,14 +571,14 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           }),
         );
         const thread = result.projection.thread;
-        if (placementSettings !== null) {
+        if (placementProfileId !== null) {
           yield* ThreadManagement.ThreadManagementService.pipe(
             Effect.flatMap((threads) =>
               threads.dispatch({
                 type: "thread.tag.set",
                 commandId: CommandId.make(`${commandId}:placement-tag`),
                 threadId: thread.id,
-                tag: placementTag(input.placementProfile!),
+                tag: placementTag(placementProfileId),
                 tagged: true,
               }),
             ),

@@ -1,5 +1,4 @@
-import type { ModelSelection, ProjectId, ServerProvider, ServerSettings } from "@t3tools/contracts";
-import { sameEntry } from "@t3tools/shared/placement";
+import type { ProjectId, ServerProvider, ServerSettings } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 
@@ -7,15 +6,16 @@ import { decideProfile, PlacementBookRef } from "./PlacementBook.ts";
 
 /**
  * The profile a new thread joins: the one asked for, else the delegated role's, else the
- * parent's. An explicit model outside that profile opts out, since the caller chose it.
+ * parent's. A pinned model joins none, and so does `requested: ""`.
  */
 export function launchProfileId(input: {
   readonly settings: ServerSettings;
   readonly requested?: string | undefined;
   readonly role?: string | undefined;
   readonly parentProfile?: string | null;
-  readonly explicitModel?: Pick<ModelSelection, "instanceId" | "model"> | undefined;
+  readonly pinned: boolean;
 }): string | null {
+  if (input.pinned || input.requested === "") return null;
   const profileId =
     input.requested ??
     (input.role === undefined
@@ -24,17 +24,7 @@ export function launchProfileId(input: {
     input.parentProfile ??
     null;
   if (profileId === null) return null;
-  const profile = input.settings.placementProfiles[profileId];
-  if (profile === undefined) return null;
-  if (
-    input.requested === undefined &&
-    input.explicitModel !== undefined &&
-    input.explicitModel.model !== undefined &&
-    !profile.entries.some((entry) => sameEntry(entry.selection, input.explicitModel!))
-  ) {
-    return null;
-  }
-  return profileId;
+  return input.settings.placementProfiles[profileId] === undefined ? null : profileId;
 }
 
 /** The account a new thread in the profile starts on now, with the entry's options. */
