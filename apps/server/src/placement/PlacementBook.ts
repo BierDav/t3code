@@ -8,16 +8,21 @@ import type {
   UsageLimitSourceSnapshot,
 } from "@t3tools/contracts";
 import {
+  placementAcceptsNewWork,
   placementEntryKey,
+  placementSelectionOutOfUsage,
+  selectionRunnable,
   type PlacementLoad,
   rankPlacementProfile,
 } from "@t3tools/shared/placement";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 
 const HOUR = 3_600_000;
 /** How far back session readings count toward an account's burn rate. */
 const BURN_WINDOW_MS = 45 * 60_000;
 const MIN_BURN_SPAN_MS = 10 * 60_000;
+const RECENT_BURN_WINDOW_MS = 15 * 60_000;
 const MAX_MOVES = 50;
 /** How long a remote placement provider's ranking stays authoritative before local fallback. */
 export const REMOTE_DECISION_TTL_MS = 2 * 60_000;
@@ -39,6 +44,7 @@ export interface PlacementBook {
   readonly samples: Map<string, Sample[]>;
   readonly burn: Map<string, number>;
   readonly moves: PlacementMove[];
+  readonly limitedUntilByAccount: Map<string, number>;
   readonly remoteDecisions: Map<string, PlacementProfileDecision>;
   remoteCheckedAt: number;
   checkedAt: number;
@@ -51,6 +57,7 @@ export function makePlacementBook(): PlacementBook {
     samples: new Map(),
     burn: new Map(),
     moves: [],
+    limitedUntilByAccount: new Map(),
     remoteDecisions: new Map(),
     remoteCheckedAt: 0,
     checkedAt: 0,
@@ -87,21 +94,25 @@ export function recordSessionSample(
 ): number | undefined {
   const previous = book.samples.get(key) ?? [];
   const last = previous.at(-1);
-  const kept =
-    last !== undefined && sample.used + 0.5 < last.used
-      ? []
-      : previous.filter((entry) => sample.at - entry.at <= BURN_WINDOW_MS);
+  const reset = last !== undefined && sample.used + 0.5 < last.used;
+  const kept = reset ? [] : previous.filter((entry) => sample.at - entry.at <= BURN_WINDOW_MS);
+  if (reset) book.burn.delete(key);
   const samples = [...kept, sample];
   book.samples.set(key, samples);
-  const first = samples[0]!;
-  const span = sample.at - first.at;
-  const meanRunning = samples.reduce((total, entry) => total + entry.running, 0) / samples.length;
-  if (span >= MIN_BURN_SPAN_MS && meanRunning >= 0.5) {
-    const perThread = (sample.used - first.used) / (span / HOUR) / meanRunning;
-    const smoothed = book.burn.has(key)
-      ? 0.5 * book.burn.get(key)! + 0.5 * Math.max(0, perThread)
-      : Math.max(0, perThread);
-    book.burn.set(key, smoothed);
+  const rate = (readings: ReadonlyArray<Sample>) => {
+    const first = readings[0];
+    if (first === undefined) return undefined;
+    const span = sample.at - first.at;
+    const meanRunning =
+      readings.reduce((total, entry) => total + entry.running, 0) / readings.length;
+    return span >= MIN_BURN_SPAN_MS && meanRunning >= 0.5
+      ? Math.max(0, (sample.used - first.used) / (span / HOUR) / meanRunning)
+      : undefined;
+  };
+  const full = rate(samples);
+  const recent = rate(samples.filter((entry) => sample.at - entry.at <= RECENT_BURN_WINDOW_MS));
+  if (full !== undefined || recent !== undefined) {
+    book.burn.set(key, Math.max(full ?? 0, recent ?? 0));
   }
   return book.burn.get(key);
 }
@@ -127,6 +138,36 @@ export function recordRemoteDecisions(
   book.remoteCheckedAt = nowMs;
 }
 
+// Gateway Codex and Claude expose several models per named account on one
+// instance. Antigravity pools can have separate limits for each routed model.
+function rejectionKey(selection: ModelSelection) {
+  const slash = selection.model.indexOf("/");
+  const account =
+    (selection.instanceId === "codex" || selection.instanceId === "claudeAgent") && slash > 0
+      ? selection.model.slice(0, slash)
+      : selection.model;
+  return placementEntryKey({ instanceId: selection.instanceId, model: account });
+}
+
+export function recordPlacementLimit(
+  book: PlacementBook,
+  selection: ModelSelection,
+  failedAt: number,
+  reportedReset: number,
+) {
+  const until =
+    Number.isFinite(reportedReset) && reportedReset > failedAt
+      ? reportedReset
+      : failedAt + 10 * 60_000;
+  const key = rejectionKey(selection);
+  book.limitedUntilByAccount.set(key, Math.max(book.limitedUntilByAccount.get(key) ?? 0, until));
+}
+
+export function placementLimitedUntil(book: PlacementBook, selection: ModelSelection, now: number) {
+  const reset = book.limitedUntilByAccount.get(rejectionKey(selection)) ?? 0;
+  return reset > now ? reset : null;
+}
+
 export function decideProfile(
   book: PlacementBook,
   input: {
@@ -135,23 +176,58 @@ export function decideProfile(
     readonly providers: ReadonlyArray<ServerProvider>;
     readonly now: number;
     readonly projectId?: ProjectId | null;
+    readonly useLocal?: boolean;
   },
 ): PlacementProfileDecision | null {
-  if (book.remoteCheckedAt > 0 && input.now - book.remoteCheckedAt < REMOTE_DECISION_TTL_MS) {
-    const remote = book.remoteDecisions.get(input.profileId);
-    if (remote !== undefined) return remote;
-  }
   const profile = input.settings.placementProfiles[input.profileId];
   if (profile === undefined) return null;
-  return rankPlacementProfile({
-    id: input.profileId,
-    profile,
-    policy: input.settings.placementPolicy,
-    providers: input.providers,
-    sources: book.sources,
-    now: input.now,
-    load: placementLoad(book),
-    settings: input.settings,
-    ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
+  const remote =
+    input.useLocal !== true &&
+    book.remoteCheckedAt > 0 &&
+    input.now - book.remoteCheckedAt < REMOTE_DECISION_TTL_MS
+      ? book.remoteDecisions.get(input.profileId)
+      : undefined;
+  const decision =
+    remote ??
+    rankPlacementProfile({
+      id: input.profileId,
+      profile,
+      policy: input.settings.placementPolicy,
+      providers: input.providers,
+      sources: book.sources,
+      now: input.now,
+      load: placementLoad(book),
+      settings: input.settings,
+      ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
+    });
+  const ranked = decision.ranked.map((entry) => {
+    const reset = placementLimitedUntil(book, entry.selection, input.now);
+    if (reset !== null && entry.state !== "disabled" && entry.state !== "unavailable") {
+      return {
+        ...entry,
+        state: "exhausted" as const,
+        reason: "The provider rejected a run on this account until its quota resets.",
+        session: { usedPercent: 100, resetsAt: DateTime.formatIso(DateTime.makeUnsafe(reset)) },
+      };
+    }
+    if (remote !== undefined && placementAcceptsNewWork(entry)) {
+      const blocked = selectionRunnable(entry.selection, input);
+      if (blocked !== null) {
+        return { ...entry, state: "unavailable" as const, reason: `Skipped: ${blocked}.` };
+      }
+      if (placementSelectionOutOfUsage(entry.selection, input.providers, book.sources, input.now)) {
+        return {
+          ...entry,
+          state: "exhausted" as const,
+          reason: "The host reports that this account is out of usage.",
+        };
+      }
+      // Older Prism workers did not send the admission flag.
+      if ((entry.session?.usedPercent ?? 0) >= input.settings.placementPolicy.switchAtPercent) {
+        return { ...entry, acceptsNewWork: false };
+      }
+    }
+    return entry;
   });
+  return { ...decision, ranked, next: ranked.find(placementAcceptsNewWork)?.selection ?? null };
 }

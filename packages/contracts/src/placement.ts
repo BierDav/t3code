@@ -133,6 +133,10 @@ export const PlacementEntryDecision = Schema.Struct({
   /** Session windows to spare before the weekly reset; absent without `sessionShareOfWeekly`. */
   weeklySlackSessions: Schema.optional(Schema.Number),
   runningThreads: Schema.Number,
+  /** A live run may stay on an entry that has too little headroom for a new run. */
+  acceptsNewWork: Schema.optional(Schema.Boolean),
+  /** Local ranking may compact in place before an intentional limit. */
+  compactBeforeLimit: Schema.optional(Schema.String),
   /** Session percent this account is expected to reach by its reset with one more thread. */
   predictedSessionPercent: Schema.optional(Schema.Number),
 });

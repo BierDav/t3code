@@ -7,18 +7,24 @@ import {
   type ServerSettings,
   type ThreadId,
 } from "@t3tools/contracts";
-import {
-  placementMoveTarget,
-  placementPickSelection,
-  placementTag,
-  sameEntry,
-} from "@t3tools/shared/placement";
+import { placementAdmission, placementTag, sameEntry } from "@t3tools/shared/placement";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettingsService from "../serverSettings.ts";
 import { decideProfile, PlacementBookRef } from "./PlacementBook.ts";
+
+export class PlacementCapacityError extends Schema.TaggedError<PlacementCapacityError>()(
+  "PlacementCapacityError",
+  { message: Schema.String },
+) {}
+
+export const noPlacementCapacity = (profile: string) =>
+  new PlacementCapacityError({
+    message: `No account in the "${profile}" profile can take new work right now. Try again after a quota resets.`,
+  });
 
 const readSettings = ServerSettingsService.ServerSettingsService.pipe(
   Effect.flatMap((service) => service.getSettings),
@@ -49,12 +55,10 @@ export const resolvePlacementPick = Effect.fn("placement.resolvePick")(function*
     now: DateTime.toEpochMillis(yield* DateTime.now),
     projectId: input.projectId,
   });
-  const current = input.current;
-  const selection =
-    current !== undefined && profile.entries.some((entry) => sameEntry(entry.selection, current))
-      ? ((decision === null ? null : placementMoveTarget(decision, current))?.to ?? current)
-      : placementPickSelection(decision, profile);
-  return selection === null ? null : { profileId, selection };
+  return {
+    profileId,
+    selection: decision === null ? null : placementAdmission(decision, input.current),
+  };
 });
 
 /**
