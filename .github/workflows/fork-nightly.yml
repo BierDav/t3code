@@ -8,10 +8,16 @@ name: Fork nightly
 # publishes nothing, so the previous release stays.
 #
 # A push to the feature branch cannot start this workflow by itself: push runs
-# use the workflow files of the pushed branch. The schedule picks the branch up
-# within 30 minutes, or a dispatch starts it at once.
+# use the workflow files of the pushed branch. Fork check (fork-check.yml on
+# placement-profiles) runs on that push instead, and its successful run starts
+# this one: workflow_run always uses the default branch's workflow files. The
+# schedule is a fallback, and a dispatch starts a build at once.
 
 on:
+  workflow_run:
+    workflows: [Fork check]
+    types: [completed]
+    branches: [placement-profiles]
   schedule:
     - cron: "17,47 * * * *"
   workflow_dispatch:
@@ -40,7 +46,10 @@ env:
 jobs:
   prepare:
     name: Find the feature commit and its upstream nightly
-    if: github.repository == 'BierDav/t3code' && github.ref_name == 'prism-nightly'
+    if: >-
+      github.repository == 'BierDav/t3code' && github.ref_name == 'prism-nightly' &&
+      (github.event_name != 'workflow_run' ||
+        (github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success'))
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -62,7 +71,7 @@ jobs:
           [[ "$FEATURE_REF" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "::error::Invalid feature_ref: $FEATURE_REF"; exit 1; }
 
           if ! feature_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$FEATURE_REF" --jq .sha 2>/dev/null); then
-            if [[ "$GITHUB_EVENT_NAME" == schedule ]]; then
+            if [[ "$GITHUB_EVENT_NAME" != workflow_dispatch ]]; then
               echo "::notice::$FEATURE_REF does not exist on $GITHUB_REPOSITORY yet; nothing to build."
               echo "build=false" >> "$GITHUB_OUTPUT"
               exit 0
