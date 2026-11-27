@@ -1,0 +1,51 @@
+# fork-kit's guard for pull requests into the fork branch (docs/custom-fork.md). The
+# sync itself runs centrally (BierDav/fork-kit, sync-forks.yml); this repository holds no App key.
+name: fork-kit
+
+on:
+  # The guard runs the workflow as defined on the base branch and never checks
+  # out the pull request's code, so the PR's content cannot change what it does.
+  # labeled/unlabeled: the fork-kit:hold label takes effect at once.
+  pull_request_target:
+    branches: [placement-profiles]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions: {}
+
+jobs:
+  # Sets the fork-kit/hold status on every PR into the fork branch, failing
+  # while it has the fork-kit:hold label (a required check). On the sync PR,
+  # also turns auto-merge off when someone other than fork-kit pushed to it.
+  guard:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      statuses: write
+    concurrency:
+      group: fork-kit-guard-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      # The base branch, not the pull request: nothing from the PR is executed.
+      # Not actions/checkout: it fails on upstream's vendored .repos gitlinks,
+      # which have no .gitmodules entry. Like checkout, this keeps the token in
+      # the job's git config for fork-kit's fetches and pushes.
+      - name: Check out the base branch
+        env:
+          TOKEN: ${{ github.token }}
+          REF: refs/heads/${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          git init -q .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git config "http.$GITHUB_SERVER_URL/.extraheader" "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          git fetch -q --no-tags origin "+$REF:refs/remotes/origin/checkout"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git -c checkout.workers=0 checkout -q --detach origin/checkout
+      - uses: BierDav/fork-kit@19f2b51e7edf71d5bf385dac66319e9a2a2448b8 # v0.4.0
+        with:
+          command: guard
+          token: ${{ github.token }}

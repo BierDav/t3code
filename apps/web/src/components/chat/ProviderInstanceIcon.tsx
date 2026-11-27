@@ -6,7 +6,7 @@ import {
   providerInstanceInitials,
 } from "@t3tools/client-runtime/state/provider-instance-display";
 
-import { ProviderDriverKind } from "@t3tools/contracts";
+import { PLACEMENT_DRIVER_KIND, ProviderDriverKind } from "@t3tools/contracts";
 import {
   AnthropicIcon,
   AntigravityIcon,
@@ -15,6 +15,7 @@ import {
   OllamaIcon,
   OpenAI,
   OpenRouterIcon,
+  PlacementProfilesIcon,
 } from "../Icons";
 
 import { cn } from "~/lib/utils";
@@ -35,6 +36,7 @@ const PROVIDER_ICON_BY_PROVIDER: Partial<Record<ProviderDriverKind, Icon>> = {
   [ProviderDriverKind.make("anthropic")]: AnthropicIcon,
   [ProviderDriverKind.make("openrouter")]: OpenRouterIcon,
   [ProviderDriverKind.make("ollama")]: OllamaIcon,
+  [PLACEMENT_DRIVER_KIND]: PlacementProfilesIcon,
 };
 
 const PROVIDER_TEXT_COLOR_BY_PROVIDER: Partial<Record<ProviderDriverKind, string>> = {
@@ -45,11 +47,13 @@ const PROVIDER_TEXT_COLOR_BY_PROVIDER: Partial<Record<ProviderDriverKind, string
   [ProviderDriverKind.make("anthropic")]: "text-black dark:text-white",
   [ProviderDriverKind.make("openrouter")]: "text-black dark:text-white",
   [ProviderDriverKind.make("ollama")]: "text-black dark:text-white",
+  [PLACEMENT_DRIVER_KIND]: "text-[#7c5cff]",
 };
 
 const BUNDLED_LOGO_COLOR_BY_PROVIDER: Partial<Record<ProviderDriverKind, string>> = {
   [ProviderDriverKind.make("claudeAgent")]: "#d97757",
   [ProviderDriverKind.make("antigravity")]: "#5b87bf",
+  [PLACEMENT_DRIVER_KIND]: "#7c5cff",
 };
 
 /** The logo's own color, or null for logos that swap between black and white per theme. */

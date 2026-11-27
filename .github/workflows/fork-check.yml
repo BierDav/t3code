@@ -1,0 +1,72 @@
+# The gate for pull requests into placement-profiles, fork-kit's sync PRs
+# included: the checks fork-nightly.yml runs before it builds a release.
+# Upstream's ci.yml runs on Blacksmith runners this fork does not have.
+name: Fork check
+
+on:
+  pull_request:
+    branches: [placement-profiles]
+  push:
+    branches: [placement-profiles]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-check-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Typecheck and test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      # Not actions/checkout: it walks upstream's vendored .repos tree, whose
+      # gitlinks have no .gitmodules entry, and fails (fork-nightly.yml does
+      # the same). History without blobs, for the merge base below.
+      - name: Check out the pull request
+        run: |
+          set -euo pipefail
+          git init -q .
+          git fetch -q --no-tags --filter=blob:none "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$GITHUB_SHA"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git -c checkout.workers=0 checkout -q --detach "$GITHUB_SHA"
+          git log -1 --format='Checked out %H'
+      - name: Find where the fork branches off upstream
+        run: |
+          set -euo pipefail
+          git fetch -q --no-tags --filter=blob:none https://github.com/pingdotgg/t3code.git main
+          echo "UPSTREAM_BASE=$(git merge-base HEAD FETCH_HEAD)" >> "$GITHUB_ENV"
+      # A full install: the server typecheck also covers the root scripts package.
+      - uses: ./.github/actions/setup-ci-deps
+      - name: Typecheck
+        run: |
+          set -euo pipefail
+          for dir in packages/contracts packages/shared packages/client-runtime apps/server apps/web; do
+            echo "::group::typecheck $dir"
+            (cd "$dir" && vp run typecheck)
+            echo "::endgroup::"
+          done
+      - name: Test the files the fork touches
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(git diff --name-only "$UPSTREAM_BASE" HEAD -- 'apps/server/**/*.test.ts' 'packages/shared/**/*.test.ts')
+          server=() shared=()
+          for file in "${files[@]}"; do
+            [[ -f "$file" ]] || continue
+            case "$file" in
+              apps/server/*) server+=("${file#apps/server/}") ;;
+              packages/shared/*) shared+=("${file#packages/shared/}") ;;
+            esac
+          done
+          if (( ${#shared[@]} )); then
+            (cd packages/shared && vp test run --config ../../vite.config.ts "${shared[@]}")
+          fi
+          if (( ${#server[@]} )); then
+            (cd apps/server && vp test run "${server[@]}")
+          fi
+          if (( ${#shared[@]} + ${#server[@]} == 0 )); then
+            echo "The fork touches no server or shared tests."
+          fi

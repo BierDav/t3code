@@ -292,6 +292,7 @@ import * as SessionStore from "./auth/SessionStore.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 import { isNetworkPath } from "@t3tools/shared/path";
+import { withPlacementProvider } from "@t3tools/shared/placement";
 import * as RelayClient from "@t3tools/shared/relayClient";
 import {
   SOCKET_FRAME_PARTS_QUERY_PARAM,
@@ -1473,6 +1474,7 @@ export const layerWsRpc = (
         | FileSystem.FileSystem
         | ServerConfig.ServerConfig
         | ServerSettings.ServerSettingsService
+        | ProviderRegistry.ProviderRegistry
         | DocumentText.DocumentText
       >();
       const applicationEvents = yield* OrchestrationEventStore.OrchestrationEventStore;
@@ -1874,6 +1876,19 @@ export const layerWsRpc = (
           ),
         );
 
+      // Clients list placement profiles as one more provider, so each picker can start a thread in one.
+      const withClientPlacement = (providers: ReadonlyArray<ServerProvider>) =>
+        serverSettings.getSettings.pipe(
+          Effect.map((settings) =>
+            withPlacementProvider(
+              providers,
+              settings,
+              providers[0]?.checkedAt ?? "1970-01-01T00:00:00.000Z",
+            ),
+          ),
+          Effect.orElseSucceed(() => providers),
+        );
+
       const loadServerConfig = Effect.fn("ws.loadServerConfig")(function* (options: {
         readonly usageLimitsCommand: boolean;
         readonly workspaceSnapshotsOnDemand: boolean;
@@ -1882,7 +1897,7 @@ export const layerWsRpc = (
         readonly catalogDigests?: boolean;
       }) {
         const keybindingsConfig = yield* keybindings.loadConfigState;
-        const currentProviders = yield* providerRegistry.getProviders;
+        const currentProviders = yield* withClientPlacement(yield* providerRegistry.getProviders);
         const commandProviders = options.usageLimitsCommand
           ? withUsageLimitsCommands(currentProviders, yield* usageLimitSources.current)
           : currentProviders;
@@ -2659,6 +2674,7 @@ export const layerWsRpc = (
                 providers = yield* providerRegistry.refreshInstance(instance.instanceId);
               }
             }
+            providers = yield* withClientPlacement(providers);
             const { instanceId, cwd } = input;
             if (input.omitProviders === true && (instanceId === undefined || cwd === undefined)) {
               return { providers: [] };
@@ -3574,6 +3590,7 @@ export const layerWsRpc = (
               // Buffer changes through discovery and the initial snapshot's send.
               const keybindingsChanges = yield* keybindings.subscribeChanges;
               const settingsChanges = yield* serverSettings.subscribeChanges;
+              const placementChanges = yield* serverSettings.subscribeChanges;
               const remoteTargets = yield* Effect.forkScoped(remoteOpenTargets.resolveTargets(), {
                 startImmediately: true,
               });
@@ -3604,7 +3621,16 @@ export const layerWsRpc = (
                 // Seed the changes-only stream so early source refreshes pair with current providers.
                 Stream.concat(
                   Stream.fromEffect(providerRegistry.getProviders),
-                  providerRegistry.streamChanges,
+                  Stream.merge(
+                    providerRegistry.streamChanges,
+                    placementChanges.pipe(
+                      Stream.map((settings) => settings.placementProfiles),
+                      Stream.changesWith(
+                        (previous, next) => JSON.stringify(previous) === JSON.stringify(next),
+                      ),
+                      Stream.mapEffect(() => providerRegistry.getProviders),
+                    ),
+                  ),
                 ),
                 usageLimitSources.streamChanges.pipe(
                   Stream.changesWith(
@@ -3614,6 +3640,7 @@ export const layerWsRpc = (
                 (providers, sources) =>
                   usageLimitsCommand ? withUsageLimitsCommands(providers, sources) : providers,
               ).pipe(
+                Stream.mapEffect(withClientPlacement),
                 // Stripped before the de-dupe below, so snapshot-only changes send nothing.
                 Stream.mapEffect((commandProviders) =>
                   workspaceSnapshotsOnDemand

@@ -1,0 +1,59 @@
+# fork-kit (https://github.com/BierDav/fork-kit) keeps this fork merged with
+# upstream through one sync pull request. See docs/custom-fork.md.
+#
+# The same file is on prism-nightly (the default branch, where the central sync
+# reads it) and on placement-profiles; keep them equal.
+# The sync runs centrally (BierDav/fork-kit, sync-forks.yml); this repository
+# holds no App key and runs only the guard (.github/workflows/fork-kit.yml on
+# placement-profiles).
+
+[upstream]
+url = "https://github.com/pingdotgg/t3code.git"
+# Every upstream nightly, newest first: v0.1.12-nightly.20261124.5209.
+track = 'tag:v\d+\.\d+\.\d+-nightly\.\d{8}\.\d+'
+
+[fork]
+branch = "placement-profiles"
+# Upstream edits .github/ in most nightlies. Its pull_request workflows run on
+# the sync PR anyway, and this repository keeps no repository secrets: the one
+# environment (prism-android-signing) only deploys from prism-nightly.
+workflow_changes = "push"
+
+[ledger]
+ignore = [".github/**", "docs/custom-fork.md"]
+
+[[patch]]
+id = "account-fallback"
+summary = "Move sends and usage-limited threads to another account with usage left"
+paths = [
+  "apps/server/src/orchestration-v2/**",
+  "apps/server/src/serverSettings*.ts",
+  "packages/contracts/src/settings.ts",
+  "packages/shared/src/serverSettings.ts",
+  "packages/shared/src/usageLimits*.ts",
+  "apps/web/src/components/chat/ComposerUsageLimits.tsx",
+]
+tests = ["apps/server/src/orchestration-v2/*.test.ts", "packages/shared/src/usageLimits.test.ts"]
+
+[[patch]]
+id = "placement-profiles"
+summary = "Schedule tagged threads across profile accounts, in step with Prism's placement"
+paths = [
+  "apps/server/src/placement/**",
+  "apps/server/src/mcp/**",
+  "apps/server/src/ws.ts",
+  "apps/server/src/orchestration-v2/**",
+  "packages/contracts/src/placement.ts",
+  "packages/contracts/src/orchestratorMcp.ts",
+  "packages/contracts/src/index.ts",
+  "packages/contracts/src/settings.ts",
+  "packages/shared/src/placement*.ts",
+  "packages/shared/package.json",
+  "packages/client-runtime/src/**",
+  "apps/web/src/components/**",
+  "apps/web/src/i18n/translations/*.json",
+  "apps/mobile/src/**",
+  "docs/user/usage.md",
+  "knip.jsonc",
+]
+tests = ["apps/server/src/placement/placement.test.ts", "packages/shared/src/placement.test.ts"]

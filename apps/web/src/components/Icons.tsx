@@ -450,6 +450,23 @@ export const OllamaIcon: Icon = ({ className, ...props }) => (
   </svg>
 );
 
+/** Placement profiles: one thread routed to whichever account its profile picks. */
+export const PlacementProfilesIcon: Icon = (props) => (
+  <svg viewBox="0 0 24 24" fill="none" {...props}>
+    <g stroke="#7c5cff" strokeWidth="1.8" strokeLinecap="round">
+      <path d="M7 12c4.2 0 4.8-7 9.6-7" />
+      <path d="M7 12h9.6" opacity="0.4" />
+      <path d="M7 12c4.2 0 4.8 7 9.6 7" opacity="0.4" />
+    </g>
+    <g fill="#7c5cff">
+      <circle cx="4.6" cy="12" r="2.6" />
+      <circle cx="19.2" cy="5" r="2.6" />
+      <circle cx="19.2" cy="12" r="2" opacity="0.4" />
+      <circle cx="19.2" cy="19" r="2" opacity="0.4" />
+    </g>
+  </svg>
+);
+
 export const AnthropicIcon: Icon = ({ className, ...props }) => (
   <svg {...props} viewBox="0 0 24 24" className={cn("fill-current", className)}>
     <path d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z" />

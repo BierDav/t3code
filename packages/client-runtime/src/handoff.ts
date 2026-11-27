@@ -1,11 +1,12 @@
-import type {
-  ModelSelection,
-  OrchestrationV2ModelSwitch,
-  OrchestrationV2Run,
-  OrchestrationV2TurnItem,
-  ProviderInstanceId,
-  ServerProvider,
-  ServerProviderModel,
+import {
+  isPlacementPick,
+  type ModelSelection,
+  type OrchestrationV2ModelSwitch,
+  type OrchestrationV2Run,
+  type OrchestrationV2TurnItem,
+  type ProviderInstanceId,
+  type ServerProvider,
+  type ServerProviderModel,
 } from "@t3tools/contracts";
 import {
   getModelSelectionStringOptionValue,
@@ -107,11 +108,13 @@ export function resolveModelSwitchChange(
     providers.find((provider) => provider.instanceId === selection.instanceId)?.models;
   const fromEffort = resolveEffort(from, modelsOf(from));
   const toEffort = resolveEffort(to, modelsOf(to));
-  const modelChanged = from.model !== to.model;
+  const modelChanged = from.model !== to.model || from.instanceId !== to.instanceId;
   const effort =
-    fromEffort && toEffort && fromEffort.value !== toEffort.value
-      ? { from: fromEffort.label, to: toEffort.label }
-      : null;
+    isPlacementPick(from) && toEffort
+      ? { from: "", to: `(${toEffort.label})` }
+      : fromEffort && toEffort && fromEffort.value !== toEffort.value
+        ? { from: fromEffort.label, to: toEffort.label }
+        : null;
   return modelChanged || effort ? { modelChanged, effort } : null;
 }
 

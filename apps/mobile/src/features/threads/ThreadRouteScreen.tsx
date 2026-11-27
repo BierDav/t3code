@@ -30,11 +30,13 @@ import {
   AuthTerminalReadScope,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
+  isPlacementPick,
   isProviderNativeSubagentThread,
   MessageId,
   ThreadId,
   type ProjectScript,
 } from "@t3tools/contracts";
+import { placementProfileOfTags, sameEntry } from "@t3tools/shared/placement";
 import {
   projectScriptCwd,
   projectScriptRuntimeEnv,
@@ -530,9 +532,21 @@ function ThreadRouteContent(
   const routeConnectionError = routeEnvironmentRuntime
     ? runtimeConnectionErrorText(routeEnvironmentRuntime, m)
     : null;
+  // A pending pick of another model takes the thread out of its placement profile when
+  // sent, so the composer shows that model rather than the profile.
+  const picksOutOfProfile =
+    selectedThread !== null &&
+    selectedThread !== undefined &&
+    composer.modelSelection !== undefined &&
+    composer.modelSelection !== null &&
+    !isPlacementPick(composer.modelSelection) &&
+    !sameEntry(composer.modelSelection, selectedThread.modelSelection);
   const selectedThreadWithDraftSettings = selectedThread
     ? {
         ...selectedThread,
+        ...(picksOutOfProfile
+          ? { tags: selectedThread.tags?.filter((tag) => placementProfileOfTags([tag]) === null) }
+          : {}),
         modelSelection: composer.modelSelection ?? selectedThread.modelSelection,
         runtimeMode: composer.runtimeMode ?? selectedThread.runtimeMode,
         interactionMode: composer.interactionMode ?? selectedThread.interactionMode,
