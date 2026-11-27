@@ -2717,10 +2717,25 @@ describe("OrchestratorMcpService provider resolution", () => {
     }),
   );
 
-  it.effect.each([
+  it.effect.each<{
+    readonly name: string;
+    readonly placementProfile?: string;
+    readonly pinned?: boolean;
+    readonly tags?: ReadonlyArray<string>;
+    readonly rejected?: string;
+  }>([
     { name: "the review profile", placementProfile: "review", tags: ["placement:review"] },
-    { name: "a pinned model", placementProfile: "", tags: [] },
-  ])("a child on $name leaves the parent's placement profile", (asked) =>
+    { name: "a profile named by label", placementProfile: "REVIEW", tags: ["placement:review"] },
+    { name: "a model it names", pinned: true, tags: [] },
+    { name: "a pinned model", placementProfile: "", pinned: true, tags: [] },
+    {
+      name: "a profile and a model",
+      placementProfile: "review",
+      pinned: true,
+      rejected: "not both",
+    },
+    { name: "an unknown profile", placementProfile: "anthropic", rejected: '"review" (Review)' },
+  ])("delegating with $name sets the child's placement profile", (asked) =>
     Effect.gen(function* () {
       const commands: Array<{ readonly type: string; readonly tag?: string }> = [];
       let tags: ReadonlyArray<string> = ["placement:default"];
@@ -2796,16 +2811,26 @@ describe("OrchestratorMcpService provider resolution", () => {
       );
       yield* Effect.gen(function* () {
         const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-        yield* service.delegateTask(scope, {
+        const delegated = service.delegateTask(scope, {
           task: "Review the change.",
           role: "review",
-          placementProfile: asked.placementProfile,
-          ...(asked.placementProfile === ""
+          ...(asked.placementProfile === undefined
+            ? {}
+            : { placementProfile: asked.placementProfile }),
+          ...(asked.pinned
             ? { target: { providerInstanceId: codexInstanceId, model: "gpt-5.4" } }
             : {}),
           mode: "async",
-          clientRequestId: `placement-child-${asked.placementProfile || "pinned"}`,
+          clientRequestId: `placement-child-${asked.name.replaceAll(" ", "-")}`,
         });
+        if (asked.rejected !== undefined) {
+          const error = yield* Effect.flip(delegated);
+          assert.equal(error.code, "invalid_request");
+          assert.include(error.message, asked.rejected);
+          assert.isFalse(commands.some((command) => command.type === "delegated_task.request"));
+          return;
+        }
+        yield* delegated;
         assert.deepEqual(tags, asked.tags);
       }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
     }),

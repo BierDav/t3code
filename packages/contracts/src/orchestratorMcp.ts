@@ -179,7 +179,7 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   placementProfile: Schema.optional(
     Schema.String.annotate({
       description:
-        "Placement profile id from `orchestrator_capabilities.placement`: the scheduler picks the model and moves the child between accounts. Omit to use the role's or your profile.",
+        "A profile's id or label from `orchestrator_capabilities.placement.profiles`: the scheduler picks the model and moves the child between accounts. Not with `target.model`, which pins that model and no profile. Omit both for the role's profile, else yours.",
     }),
   ),
   isolation: Schema.optional(

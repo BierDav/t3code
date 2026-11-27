@@ -143,7 +143,11 @@ import { WITHHELD, withoutWebhookUrlToken } from "../scheduledTasks/webhookUrlTo
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
-import { placementProfileOfTags } from "@t3tools/shared/placement";
+import {
+  placementProfileChoices,
+  placementProfileOfTags,
+  resolvePlacementProfileId,
+} from "@t3tools/shared/placement";
 import {
   launchProfileId,
   launchSelection,
@@ -2989,16 +2993,43 @@ const make = Effect.gen(function* () {
         const placementSettings = yield* serverSettings.getSettings.pipe(
           Effect.orElseSucceed(() => null),
         );
+        // A target that names a provider or model pins the child to it.
+        const pinned =
+          input.target?.providerInstanceId !== undefined || input.target?.model !== undefined;
+        let requestedProfile = input.placementProfile;
+        if (
+          requestedProfile !== undefined &&
+          requestedProfile !== "" &&
+          placementSettings !== null &&
+          !isRetryOfAcceptedDelegation
+        ) {
+          if (pinned) {
+            return yield* failure(
+              "invalid_request",
+              "Pass `placementProfile` or `target.model`, not both: a profile picks the model, a target pins one.",
+            );
+          }
+          const resolved = resolvePlacementProfileId(
+            placementSettings.placementProfiles,
+            requestedProfile,
+          );
+          if (resolved === null) {
+            return yield* failure(
+              "invalid_request",
+              `No placement profile "${requestedProfile}". Pass one of: ${placementProfileChoices(placementSettings.placementProfiles)}.`,
+            );
+          }
+          requestedProfile = resolved;
+        }
         const childProfile =
           placementSettings === null || isRetryOfAcceptedDelegation
             ? null
             : launchProfileId({
                 settings: placementSettings,
-                requested: input.placementProfile,
+                requested: requestedProfile,
                 role: input.role,
                 parentProfile: placementProfileOfTags(parent.thread.tags),
-                explicitModel:
-                  input.target?.model === undefined ? undefined : requestedTarget.modelSelection,
+                pinned,
               });
         const placed =
           childProfile === null || placementSettings === null
