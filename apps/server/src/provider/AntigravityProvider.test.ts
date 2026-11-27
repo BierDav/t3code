@@ -139,6 +139,7 @@ const makeHarness = Effect.fn("makeAntigravityProviderHarness")(function* (
     readonly auth?: { readonly type: string; readonly label: string };
     readonly enabled?: boolean;
     readonly safe?: boolean;
+    readonly environment?: NodeJS.ProcessEnv;
     readonly rememberedRuntimeModes?: ReadonlyArray<RuntimeMode>;
   } = {},
 ) {
@@ -154,6 +155,7 @@ const makeHarness = Effect.fn("makeAntigravityProviderHarness")(function* (
     decodeSettings({ enabled: options.enabled ?? true, customModels: ["do-not-seed-me"] }),
     {
       stampIdentity: (snapshot) => Effect.succeed({ ...snapshot, instanceId, driver }),
+      ...(options.environment ? { environment: options.environment } : {}),
       ...(options.auth ? { auth: options.auth } : {}),
       ...(options.rememberedRuntimeModes
         ? { rememberedRuntimeModes: options.rememberedRuntimeModes }
@@ -198,6 +200,35 @@ const makeHarness = Effect.fn("makeAntigravityProviderHarness")(function* (
 });
 
 describe("Antigravity model catalog", () => {
+  it.effect("keeps configured gateway routes when a resumed session reports stock models", () =>
+    Effect.gen(function* () {
+      const routes = ["agy-pro/gemini-4-neon", "gcp/gemini-4-neon"];
+      const harness = yield* makeHarness({
+        environment: { AGY_LLM_GATEWAY_MODELS: routes.join(",") },
+      });
+      yield* harness.initialize;
+      const published = yield* harness.nextPublish((snapshot) => snapshot.models.length > 0);
+      yield* harness.provider.onSessionStarted({
+        ...started,
+        sessionSetupResult: {
+          ...started.sessionSetupResult,
+          configOptions: [
+            {
+              ...modelConfig,
+              currentValue: routes[0]!,
+              options: routes.map((value) => ({ value, name: value })),
+            },
+          ],
+        },
+      });
+      expect((yield* published).models.map((model) => model.slug)).toEqual(routes);
+      yield* harness.provider.onSessionStarted(started, "/workspace", { resumed: true });
+      yield* harness.provider.onConfigOptionsUpdated([modelConfig]);
+      const snapshot = yield* harness.provider.snapshot.getSnapshot;
+      expect(snapshot.models.map((model) => model.slug)).toEqual(routes);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
   it("uses legacy session models only when model config is absent", () => {
     const fromLegacy = buildAntigravityModelsFromSession({
       models: sessionSetupResult.models,
