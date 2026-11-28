@@ -386,7 +386,9 @@ describe("CLIProxyAPI built-in management API", () => {
             return { status: 200, body: { organization: { uuid: claudeOrganizationId } } };
           }
           expect(request.url).toBe("https://api.anthropic.com/api/oauth/usage?cedar_ember=1");
-          expect(request.header?.["User-Agent"]).toMatch(/^claude-code\//);
+          expect(request.header?.["User-Agent"]).toMatch(
+            /^claude-cli\/\d+\.\d+\.\d+ \(external, cli\)$/,
+          );
           return {
             status: 200,
             body: {
@@ -647,6 +649,10 @@ describe("CLIProxyAPI built-in management API", () => {
             }
             expect(request.url).toBe(
               `https://api.anthropic.com/api/organizations/${claudeOrganizationId}/reset_rate_limits`,
+            );
+            // Claude answers a claim from another agent as ineligible.
+            expect(request.header?.["User-Agent"]).toMatch(
+              /^claude-cli\/[\d.]+ \(external, cli\)$/,
             );
             requestIds.push(decodeClaudeClaim(request.data).request_id);
             return {
