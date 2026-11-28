@@ -588,7 +588,7 @@ describe("CLIProxyAPI built-in management API", () => {
         accounts: [
           { id: "kiro.json", auth_index: "k", provider: "kiro", email: "k@example.com" },
           // Antigravity only allows ACP clients, so its internal quota API is never called.
-          { id: "antigravity.json", auth_index: "g", provider: "antigravity", project_id: "p" },
+          { id: "gemini-cli.json", auth_index: "g", provider: "gemini-cli" },
           { ...accounts[0]!, provider: "claude" },
         ],
         upstream: () => ({ status: 200, body: { five_hour: { utilization: 1, resets_at: null } } }),
@@ -695,7 +695,7 @@ describe("CLIProxyAPI built-in management API", () => {
       const test = fixture({
         accounts: [
           { id: "kimi.json", auth_index: "k", provider: "kimi-ai" },
-          { id: "gemini.json", auth_index: "g", provider: "antigravity" },
+          { id: "gemini.json", auth_index: "g", provider: "gemini-cli" },
           { id: "other.json", auth_index: "o", provider: "kimi-ai" },
           { id: "off.json", auth_index: "x", provider: "qwen", disabled: true },
         ],
@@ -703,7 +703,7 @@ describe("CLIProxyAPI built-in management API", () => {
       const api = yield* test.api;
       expect(yield* api.readAccounts(config)).toEqual({
         accounts: [],
-        unreadProviders: ["antigravity", "kimi-ai"],
+        unreadProviders: ["gemini-cli", "kimi-ai"],
       });
       expect(test.requests.every((request) => request.path.endsWith("/auth-files"))).toBe(true);
     }),
@@ -742,6 +742,104 @@ describe("CLIProxyAPI built-in management API", () => {
       const result = yield* api.consume(config, "missing.json", "credit").pipe(Effect.result);
       expect(result._tag).toBe("Failure");
       expect(test.requests).toHaveLength(1);
+    }),
+  );
+});
+
+// Fork patch (antigravity-hub-limits).
+describe("CLIProxyAPI hub Antigravity limits", () => {
+  const summaryUrl =
+    "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary";
+
+  it.effect("reads a pooled card's grouped summary through the hub", () =>
+    Effect.gen(function* () {
+      const test = fixture({
+        accounts: [{ id: "agy-pro", auth_index: "usage:agy-pro", provider: "antigravity" }],
+        upstream: () => ({
+          status: 200,
+          body: {
+            groups: [
+              {
+                displayName: "Claude and GPT models",
+                buckets: [
+                  {
+                    bucketId: "3p-weekly",
+                    window: "weekly",
+                    remainingFraction: 0,
+                    resetTime: "2099-12-03T14:46:55Z",
+                  },
+                  { bucketId: "3p-5h", window: "5h", remainingFraction: 0.5 },
+                ],
+              },
+              {
+                displayName: "Gemini models",
+                buckets: [{ bucketId: "gemini-weekly", window: "weekly", remainingFraction: 0.75 }],
+              },
+            ],
+          },
+        }),
+      });
+      const { accounts, unreadProviders } = yield* (yield* test.api).readAccounts(config);
+      expect(unreadProviders).toEqual([]);
+      expect(accounts).toHaveLength(1);
+      const [account] = accounts;
+      expect(account?.driver).toBe("antigravity");
+      expect(account?.usageLimits.unavailable).toBeUndefined();
+      expect(account?.usageLimits.windows).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "3p-weekly",
+            kind: "weekly",
+            usedPercent: 100,
+            resetsAt: "2099-12-03T14:46:55.000Z",
+            label: "Claude & GPT (shared) · Weekly",
+          }),
+          expect.objectContaining({ id: "3p-5h", kind: "session", usedPercent: 50 }),
+          expect.objectContaining({ id: "gemini-weekly", kind: "weekly", usedPercent: 25 }),
+        ]),
+      );
+      const summary = test.requests.find((request) => request.body?.method === "POST")?.body;
+      expect(summary).toMatchObject({
+        auth_index: "usage:agy-pro",
+        url: summaryUrl,
+        header: { Authorization: "Bearer $TOKEN$" },
+      });
+      // No project: the hub asks for each pool member's own.
+      expect(summary?.data).toBe(encodeJson({}));
+    }),
+  );
+
+  it.effect("sends an account's own project", () =>
+    Effect.gen(function* () {
+      const test = fixture({
+        accounts: [
+          { id: "agy.json", auth_index: "g", provider: "antigravity", project_id: " project-7 " },
+        ],
+        upstream: () => ({
+          status: 200,
+          body: {
+            buckets: [{ bucketId: "gemini-weekly", window: "weekly", remainingFraction: 1 }],
+          },
+        }),
+      });
+      yield* (yield* test.api).readAccounts(config);
+      const summary = test.requests.find((request) => request.body?.method === "POST")?.body;
+      expect(summary?.data).toBe(encodeJson({ project: "project-7" }));
+    }),
+  );
+
+  it.effect.each([
+    { name: "a refused call", status: 502, body: { error: "unavailable" } },
+    { name: "a malformed answer", status: 200, body: [] },
+    { name: "an empty summary", status: 200, body: {} },
+  ])("reports $name as unavailable", ({ status, body }) =>
+    Effect.gen(function* () {
+      const test = fixture({
+        accounts: [{ id: "gcp", auth_index: "usage:gcp", provider: "antigravity" }],
+        upstream: () => ({ status, body }),
+      });
+      const { accounts } = yield* (yield* test.api).readAccounts(config);
+      expect(accounts[0]?.usageLimits.unavailable?.reason).toBe("probeFailed");
     }),
   );
 });

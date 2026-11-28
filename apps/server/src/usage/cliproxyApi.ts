@@ -24,7 +24,11 @@ import { codexRateLimitsToLimits } from "../provider/codexUsageLimits.ts";
 import * as ClaudeResetCredits from "../provider/claudeResetCredits.ts";
 import { claudeUsageResponseToLimits } from "../provider/claudeUsageLimits.ts";
 import * as ResetCreditCoordinator from "../provider/resetCreditCoordinator.ts";
-import { makeUnavailableUsageLimits } from "@t3tools/provider-core/server/usageLimits";
+import {
+  makeUnavailableUsageLimits,
+  makeUsageLimits,
+} from "@t3tools/provider-core/server/usageLimits";
+import { ANTIGRAVITY_SUMMARY_URL, antigravitySummaryWindows } from "./antigravityHubLimits.ts";
 
 /** A hub with its management key already read from wherever the setting keeps it. */
 export interface CliproxyHub {
@@ -38,6 +42,7 @@ const AuthFile = Schema.Struct({
   provider: Schema.String,
   email: Schema.optional(Schema.String),
   disabled: Schema.optional(Schema.Boolean),
+  project_id: Schema.optional(Schema.String),
   id_token: Schema.optional(
     Schema.Struct({
       chatgpt_account_id: Schema.optional(Schema.String),
@@ -384,6 +389,26 @@ const HUB_PROVIDERS = new Map<string, HubProvider>([
           ...listedIdentity(account),
           usageLimits: grokUsageResponseToLimits(usage, checkedAt),
         };
+      }),
+    },
+  ],
+  // Fork patch (antigravity-hub-limits): see antigravityHubLimits.ts.
+  [
+    "antigravity",
+    {
+      driver: ProviderDriverKind.make("antigravity"),
+      // The hub supplies its own Antigravity client headers and swaps in the token.
+      header: () => ({ Authorization: "Bearer $TOKEN$", "Content-Type": "application/json" }),
+      read: Effect.fnUntraced(function* ({ account, call, checkedAt }) {
+        // Pooled hub cards have no project; the hub then asks for each member's own.
+        const project = account.project_id?.trim();
+        const requestedAt = Date.parse(checkedAt);
+        const summary = yield* call(ANTIGRAVITY_SUMMARY_URL, project ? { project } : {});
+        const windows = yield* antigravitySummaryWindows(summary, requestedAt);
+        if (windows.length === 0) {
+          return yield* new UsageLimitSourceError({ detail: "No Antigravity quota reported." });
+        }
+        return { ...listedIdentity(account), usageLimits: makeUsageLimits({ checkedAt, windows }) };
       }),
     },
   ],
