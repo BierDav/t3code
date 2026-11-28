@@ -57,3 +57,15 @@ paths = [
   "knip.jsonc",
 ]
 tests = ["apps/server/src/placement/placement.test.ts", "packages/shared/src/placement.test.ts"]
+
+[[patch]]
+id = "antigravity-hub-limits"
+summary = "Read Antigravity usage limits through a CLIProxy hub, which upstream stopped doing"
+paths = [
+  "apps/server/src/usage/antigravityHubLimits.ts",
+  "apps/server/src/usage/cliproxyApi*.ts",
+  "apps/server/src/usage/UsageLimitSources.ts",
+  "packages/shared/src/usageLimits*.ts",
+  "apps/web/src/components/chat/ThreadDetailsUsage.logic.ts",
+]
+tests = ["apps/server/src/usage/cliproxyApi.test.ts", "packages/shared/src/usageLimits.test.ts"]
