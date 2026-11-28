@@ -13036,7 +13036,11 @@
     },
     " more in Linked items"
   ],
-  "b66fdba091c5a3ca": "{hosts}: T3 Code will use saved profiles and local usage data.",
-  "f81eb6f16ff89be3": "{hosts}: T3 Code is syncing with Prism over HTTP.",
-  "dccd74901dc3c91a": "Prism connection lost"
+  "dbe712c0cc825386": "Prism is unreachable",
+  "98aace61f8936fe9": "{environment} can't reach Prism",
+  "a87695d39c9d0070": "T3 Code is using saved profiles and local usage data.",
+  "fad87ebab2c81248": "Syncing with Prism over HTTP",
+  "94e808c2d52a69d8": "{environment} is syncing with Prism over HTTP",
+  "78ee73d7b1b08a27": "Profiles and usage still sync while the live connection is down.",
+  "acb0283f2ec3a438": "Dismiss Prism notice"
 }

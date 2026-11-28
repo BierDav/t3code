@@ -13028,7 +13028,11 @@
     },
     " de plus dans Éléments associés"
   ],
-  "b66fdba091c5a3ca": "{hosts} : T3 Code utilisera les profils enregistrés et les données d’utilisation locales.",
-  "f81eb6f16ff89be3": "{hosts} : T3 Code se synchronise avec Prism via HTTP.",
-  "dccd74901dc3c91a": "Connexion à Prism perdue"
+  "dbe712c0cc825386": "Prism est injoignable",
+  "98aace61f8936fe9": "{environment} ne parvient pas à joindre Prism",
+  "a87695d39c9d0070": "T3 Code utilise les profils enregistrés et les données d’utilisation locales.",
+  "fad87ebab2c81248": "Synchronisation avec Prism via HTTP",
+  "94e808c2d52a69d8": "{environment} se synchronise avec Prism via HTTP",
+  "78ee73d7b1b08a27": "Les profils et l’utilisation restent synchronisés tant que la connexion en direct est coupée.",
+  "acb0283f2ec3a438": "Masquer l’avis Prism"
 }

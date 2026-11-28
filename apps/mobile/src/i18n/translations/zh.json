@@ -5695,7 +5695,11 @@
   "3ee30a50b70fffab": "已由 {by} 撤回：{reason}",
   "201490988858b511": "已由 {by} 撤回",
   "46d614fa7b4bf1e5": "工作流运行",
-  "b66fdba091c5a3ca": "{hosts}：T3 Code 将使用已保存的配置方案和本地用量数据。",
-  "f81eb6f16ff89be3": "{hosts}：T3 Code 正通过 HTTP 与 Prism 同步。",
-  "dccd74901dc3c91a": "与 Prism 的连接已断开"
+  "dbe712c0cc825386": "无法连接 Prism",
+  "98aace61f8936fe9": "{environment} 无法连接 Prism",
+  "a87695d39c9d0070": "T3 Code 正在使用已保存的配置方案和本地用量数据。",
+  "fad87ebab2c81248": "正通过 HTTP 与 Prism 同步",
+  "94e808c2d52a69d8": "{environment} 正通过 HTTP 与 Prism 同步",
+  "78ee73d7b1b08a27": "实时连接中断期间，配置方案和用量仍会同步。",
+  "acb0283f2ec3a438": "关闭 Prism 通知"
 }

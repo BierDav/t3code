@@ -12961,7 +12961,11 @@
     },
     "개 더 보기"
   ],
-  "b66fdba091c5a3ca": "{hosts}: T3 Code가 저장된 프로필과 로컬 사용량 데이터를 사용합니다.",
-  "f81eb6f16ff89be3": "{hosts}: T3 Code가 HTTP를 통해 Prism과 동기화 중입니다.",
-  "dccd74901dc3c91a": "Prism 연결이 끊어졌습니다"
+  "dbe712c0cc825386": "Prism에 연결할 수 없습니다",
+  "98aace61f8936fe9": "{environment}에서 Prism에 연결할 수 없습니다",
+  "a87695d39c9d0070": "T3 Code가 저장된 프로필과 로컬 사용량 데이터를 사용하고 있습니다.",
+  "fad87ebab2c81248": "HTTP를 통해 Prism과 동기화 중",
+  "94e808c2d52a69d8": "{environment}이(가) HTTP를 통해 Prism과 동기화 중입니다",
+  "78ee73d7b1b08a27": "실시간 연결이 끊긴 동안에도 프로필과 사용량은 계속 동기화됩니다.",
+  "acb0283f2ec3a438": "Prism 알림 닫기"
 }

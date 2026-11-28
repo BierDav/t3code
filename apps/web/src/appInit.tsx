@@ -18,7 +18,6 @@ import { retainThreadOverlaysForThread } from "./components/chat/threadOverlayRe
 import { resolveWindowTitleThreadStatus } from "./components/Sidebar.logic";
 import { startBackgroundThreadAnnouncements } from "./components/BackgroundThreadAnnouncer";
 import { startSshPasswordPromptQueue } from "./components/desktop/SshPasswordPromptDialog";
-import { startPrismConnectionToast } from "./components/PrismConnectionToast";
 import { startHostFreezeToasts } from "./components/HostFreezeToastCoordinator";
 import { startKeybindingsUpdateToasts } from "./components/KeybindingsUpdateToast";
 import { startLegacyThreadMigrationToast } from "./components/LegacyThreadMigrationToast";
@@ -317,7 +316,6 @@ export function startAppServices(): AppRouter {
   startKeybindingsUpdateToasts();
   startSlowRpcRequestToasts();
   startHostFreezeToasts();
-  startPrismConnectionToast();
   startLegacyThreadMigrationToast();
   startPermissionUpdateNotices(router);
   startThreadNotifications(appAtomRegistry, router);

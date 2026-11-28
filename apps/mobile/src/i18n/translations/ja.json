@@ -5685,7 +5685,11 @@
   "3ee30a50b70fffab": "{by} が取り下げました: {reason}",
   "201490988858b511": "{by} が取り下げ",
   "46d614fa7b4bf1e5": "ワークフローの実行",
-  "b66fdba091c5a3ca": "{hosts}：T3 Code は保存済みのプロファイルとローカルの使用量データを使います。",
-  "f81eb6f16ff89be3": "{hosts}：T3 Code は HTTP 経由で Prism と同期しています。",
-  "dccd74901dc3c91a": "Prism との接続が切断されました"
+  "dbe712c0cc825386": "Prism に接続できません",
+  "98aace61f8936fe9": "{environment} から Prism に接続できません",
+  "a87695d39c9d0070": "T3 Code は保存済みのプロファイルとローカルの使用量データを使っています。",
+  "fad87ebab2c81248": "HTTP 経由で Prism と同期中",
+  "94e808c2d52a69d8": "{environment} は HTTP 経由で Prism と同期しています",
+  "78ee73d7b1b08a27": "ライブ接続が切れている間も、プロファイルと使用量は同期されます。",
+  "acb0283f2ec3a438": "Prism の通知を閉じる"
 }

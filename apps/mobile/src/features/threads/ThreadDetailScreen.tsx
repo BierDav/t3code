@@ -16,6 +16,7 @@ import { parseThreadKey, threadKey } from "@t3tools/client-runtime/state/entitie
 import { createThreadVisitTracker } from "@t3tools/client-runtime/state/thread-visits";
 import { useChildThreadInputs, useThreadReportedModelSelection } from "../../state/entities";
 import { UsageLimitRecoveryCard } from "./UsageLimitRecoveryCard";
+import { PrismConnectionCard } from "./PrismConnectionCard";
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import {
   effectiveSnoozed,
@@ -1738,6 +1739,7 @@ function ThreadDetailBody(
                       thread={props.selectedThread}
                       environmentId={props.environmentId}
                     />
+                    <PrismConnectionCard serverConfig={props.serverConfig} />
                     <ChildThreadApprovals
                       threadRef={props.selectedThreadDetailRef}
                       maxHeight={pendingUserInputMaxHeight}

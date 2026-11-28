@@ -55,7 +55,6 @@ import { appAtomRegistry } from "./state/atom-registry";
 import { subscribeComposerDraftModelReconciliation } from "./state/use-composer-drafts";
 import { environmentThreadShells, threadEnvironment } from "./state/threads";
 import { environmentShell, shellCachesReadAtom } from "./state/shell";
-import { PrismConnectionToast } from "./components/PrismConnectionToast";
 import { OverlayPortalHost } from "./components/ui/OverlayPortal";
 import { shouldHandleAppLink, restoreDraftLinkState } from "./lib/appLinking";
 import { hasCloudPublicConfig } from "./features/cloud/publicConfig";
@@ -330,7 +329,6 @@ function AppContent() {
               </NativeLayoutMetricsProvider>
             </GlobalVoiceInputControl>
             <OverlayPortalHost />
-            <PrismConnectionToast />
           </SafeAreaProvider>
         </KeyboardProvider>
       </GestureHandlerRootView>

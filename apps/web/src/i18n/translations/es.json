@@ -13023,7 +13023,11 @@
     },
     " más en Elementos vinculados"
   ],
-  "b66fdba091c5a3ca": "{hosts}: T3 Code usará los perfiles guardados y los datos de uso locales.",
-  "f81eb6f16ff89be3": "{hosts}: T3 Code se está sincronizando con Prism por HTTP.",
-  "dccd74901dc3c91a": "Se perdió la conexión con Prism"
+  "dbe712c0cc825386": "Prism no está disponible",
+  "98aace61f8936fe9": "{environment} no puede conectarse a Prism",
+  "a87695d39c9d0070": "T3 Code está usando los perfiles guardados y los datos de uso locales.",
+  "fad87ebab2c81248": "Sincronizando con Prism por HTTP",
+  "94e808c2d52a69d8": "{environment} se está sincronizando con Prism por HTTP",
+  "78ee73d7b1b08a27": "Los perfiles y el uso se siguen sincronizando mientras la conexión en vivo no está disponible.",
+  "acb0283f2ec3a438": "Descartar aviso de Prism"
 }

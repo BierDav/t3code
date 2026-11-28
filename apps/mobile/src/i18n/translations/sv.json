@@ -5714,7 +5714,11 @@
   "3ee30a50b70fffab": "Återkallad av {by}: {reason}",
   "201490988858b511": "återkallad av {by}",
   "46d614fa7b4bf1e5": "Arbetsflödeskörningar",
-  "b66fdba091c5a3ca": "{hosts}: T3 Code använder sparade profiler och lokala användningsdata.",
-  "f81eb6f16ff89be3": "{hosts}: T3 Code synkroniserar med Prism via HTTP.",
-  "dccd74901dc3c91a": "Anslutningen till Prism bröts"
+  "dbe712c0cc825386": "Prism går inte att nå",
+  "98aace61f8936fe9": "{environment} når inte Prism",
+  "a87695d39c9d0070": "T3 Code använder sparade profiler och lokala användningsdata.",
+  "fad87ebab2c81248": "Synkroniserar med Prism via HTTP",
+  "94e808c2d52a69d8": "{environment} synkroniserar med Prism via HTTP",
+  "78ee73d7b1b08a27": "Profiler och användning synkroniseras fortfarande medan liveanslutningen är nere.",
+  "acb0283f2ec3a438": "Stäng Prism-meddelande"
 }
