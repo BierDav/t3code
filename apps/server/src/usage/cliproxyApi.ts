@@ -289,6 +289,9 @@ const CODEX_HUB: HubProvider = {
 };
 
 const GROK_CLI_VERSION = "1.0.77";
+// Claude offers banked resets only to Claude Code's own user agent at a recent version;
+// any other agent, or 2.1.273, reads as ineligible ("surface" or "cli_version").
+const CLAUDE_CLI_VERSION = "2.1.332";
 const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const CLAUDE_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile";
 const claudeOrganization = (call: HubCall) =>
@@ -303,7 +306,7 @@ const CLAUDE_HUB: HubProvider = {
     "anthropic-beta": "oauth-2025-04-20",
     "Content-Type": "application/json",
     // The OAuth usage endpoint can return 429 without a Claude Code user agent.
-    "User-Agent": "claude-code/2.1.273",
+    "User-Agent": `claude-cli/${CLAUDE_CLI_VERSION} (external, cli)`,
   }),
   read: Effect.fnUntraced(function* ({ account, call, checkedAt }) {
     const usage = yield* call(`${CLAUDE_USAGE_URL}?cedar_ember=1`).pipe(
