@@ -176,6 +176,12 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   ),
   title: Schema.optional(OrchestratorMcpTitle),
   role: Schema.optional(OrchestratorMcpTaskRole),
+  placementProfile: Schema.optional(
+    Schema.String.annotate({
+      description:
+        "A profile's id or label from `orchestrator_capabilities.placement.profiles`: the scheduler picks the model and moves the child between accounts. Not with `target.model`, which pins that model and no profile. Omit both for the role's profile, else yours.",
+    }),
+  ),
   isolation: Schema.optional(
     Schema.Literals(["shared", "worktree"]).annotate({
       description:
@@ -720,6 +726,20 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
     scheduledTasks: Schema.Boolean,
     maxBatchThreads: Schema.Number,
   }),
+  /** Placement profiles and the account each would start a new thread on now. */
+  placement: Schema.optional(
+    Schema.Struct({
+      profile: Schema.NullOr(Schema.String),
+      profiles: Schema.Array(
+        Schema.Struct({
+          id: Schema.String,
+          label: Schema.String,
+          next: Schema.NullOr(Schema.String),
+          entries: Schema.Array(Schema.String),
+        }),
+      ),
+    }),
+  ),
 });
 export type OrchestratorMcpCapabilitiesResult = typeof OrchestratorMcpCapabilitiesResult.Type;
 

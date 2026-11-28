@@ -10,6 +10,7 @@ import {
 } from "@t3tools/contracts";
 import {
   CLAUDE_RESUME_COMPACTION_NEVER_ANSWER,
+  COMPACTION_ACCOUNT_SWITCH_MIN_TOKENS,
   COMPACTION_SUGGESTION_MIN_TOKENS,
   isClaudeResumeCompactionQuestion,
 } from "@t3tools/shared/claudeCompaction";
@@ -261,12 +262,18 @@ export function shouldOfferResumeCompaction(input: {
   readonly usedTokens: number | null | undefined;
   readonly updatedAt: string | null | undefined;
   readonly promptCacheTtlMs?: number | undefined;
+  readonly accountSwitched?: boolean | undefined;
   readonly now: string;
 }): boolean {
-  if (
-    input.provider !== "claudeAgent" ||
-    (input.usedTokens ?? 0) < COMPACTION_SUGGESTION_MIN_TOKENS
-  ) {
+  if (input.provider !== "claudeAgent") {
+    return false;
+  }
+
+  if (input.accountSwitched) {
+    return (input.usedTokens ?? 0) >= COMPACTION_ACCOUNT_SWITCH_MIN_TOKENS;
+  }
+
+  if ((input.usedTokens ?? 0) < COMPACTION_SUGGESTION_MIN_TOKENS) {
     return false;
   }
 
@@ -353,12 +360,22 @@ export function compactBeforeSendTokens(input: {
     liveUsage,
     providerThread,
   );
+  const latestCompletedRun = projection.runs
+    .filter((run) => run.status === "completed" && run.providerThreadId === activeProviderThreadId)
+    .reduce<(typeof projection.runs)[number] | null>(
+      (latest, run) => (latest === null || run.ordinal > latest.ordinal ? run : latest),
+      null,
+    );
+  const lastInstanceId =
+    latestCompletedRun?.providerInstanceId ?? providerThread?.providerInstanceId ?? null;
+  const accountSwitched = lastInstanceId !== null && lastInstanceId !== input.selection.instanceId;
   return contextWindow !== null &&
     shouldOfferResumeCompaction({
       provider: provider.driver,
       usedTokens: contextWindow.usedTokens,
       updatedAt: contextWindow.updatedAt,
       promptCacheTtlMs: liveUsage?.promptCacheTtlMs,
+      accountSwitched,
       now: input.now,
     })
     ? contextWindow.usedTokens

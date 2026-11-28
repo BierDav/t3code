@@ -2730,6 +2730,125 @@ describe("OrchestratorMcpService provider resolution", () => {
     }),
   );
 
+  it.effect.each<{
+    readonly name: string;
+    readonly placementProfile?: string;
+    readonly pinned?: boolean;
+    readonly tags?: ReadonlyArray<string>;
+    readonly rejected?: string;
+  }>([
+    { name: "the review profile", placementProfile: "review", tags: ["placement:review"] },
+    { name: "a profile named by label", placementProfile: "REVIEW", tags: ["placement:review"] },
+    { name: "a model it names", pinned: true, tags: [] },
+    { name: "a pinned model", placementProfile: "", pinned: true, tags: [] },
+    {
+      name: "a profile and a model",
+      placementProfile: "review",
+      pinned: true,
+      rejected: "not both",
+    },
+    { name: "an unknown profile", placementProfile: "anthropic", rejected: '"review" (Review)' },
+  ])("delegating with $name sets the child's placement profile", (asked) =>
+    Effect.gen(function* () {
+      const commands: Array<{ readonly type: string; readonly tag?: string }> = [];
+      let tags: ReadonlyArray<string> = ["placement:default"];
+      const task = {
+        id: taskId,
+        threadId: parentThreadId,
+        origin: "app_owned",
+        childThreadId,
+        providerInstanceId: codexInstanceId,
+        model: "gpt-5.4",
+        status: "running",
+        result: null,
+      };
+      const parent = () => {
+        const projection = parentProjection(commands.length > 0 ? [task] : []);
+        return {
+          ...projection,
+          thread: { ...projection.thread, tags: ["placement:default"] },
+        } as OrchestrationV2ThreadProjection;
+      };
+      const entries = [{ selection: { instanceId: codexInstanceId, model: "gpt-5.4" } }];
+      const dependencies = Layer.mergeAll(
+        NodeServices.layer,
+        NodeCrypto.layer,
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          hasReceipt: () => Effect.succeed(false),
+          getThreadRecords: (threadId) =>
+            Effect.succeed(threadId === parentThreadId ? parent() : childProjection),
+          dispatch: (command) =>
+            Effect.sync(() => {
+              commands.push(command);
+              if (command.type === "thread.tag.set") {
+                tags = command.tagged
+                  ? [...tags, command.tag]
+                  : tags.filter((tag) => tag !== command.tag);
+              }
+              return {
+                sequence: 1,
+                storedEvents:
+                  command.type === "delegated_task.request"
+                    ? [
+                        {
+                          event: {
+                            type: "thread.created",
+                            threadId: childThreadId,
+                            payload: { id: childThreadId, tags: ["placement:default"] },
+                          },
+                        },
+                        { event: { type: "subagent.updated", payload: task } },
+                      ]
+                    : [],
+              } as never;
+            }),
+        }),
+        ServerSettings.layerTest({
+          placementProfiles: {
+            default: { label: "Default", entries },
+            review: { label: "Review", entries },
+          },
+        }),
+        providerRegistryLayer([
+          providerSnapshot({
+            instanceId: codexInstanceId,
+            driver: ProviderDriverKind.make("codex"),
+            model: "gpt-5.4",
+          }),
+        ]),
+        adapterRegistryLayer([codexInstanceId]),
+        Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const delegated = service.delegateTask(scope, {
+          task: "Review the change.",
+          role: "review",
+          ...(asked.placementProfile === undefined
+            ? {}
+            : { placementProfile: asked.placementProfile }),
+          ...(asked.pinned
+            ? { target: { providerInstanceId: codexInstanceId, model: "gpt-5.4" } }
+            : {}),
+          mode: "async",
+          clientRequestId: `placement-child-${asked.name.replaceAll(" ", "-")}`,
+        });
+        if (asked.rejected !== undefined) {
+          const error = yield* Effect.flip(delegated);
+          assert.equal(error.code, "invalid_request");
+          assert.include(error.message, asked.rejected);
+          assert.isFalse(commands.some((command) => command.type === "delegated_task.request"));
+          return;
+        }
+        yield* delegated;
+        assert.deepEqual(tags, asked.tags);
+      }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
+    }),
+  );
+
   it.effect("gives a worktree child in a project whose folder holds several repositories", () =>
     Effect.gen(function* () {
       // A plain project folder: Git finds no repository at its root, only in a/ and b/.

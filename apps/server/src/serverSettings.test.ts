@@ -6,6 +6,7 @@ import {
   globalIdleCompaction,
   type ManagedPolicyDocument,
   ModelSelection,
+  PLACEMENT_INSTANCE_ID,
   ProjectId,
   ProjectScript,
   ProviderDriverKind,
@@ -181,6 +182,47 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
       ]);
       assert.deepEqual(settings.providerModelPreferences?.[provider]?.modelOrder, ["luna", "sol"]);
     }).pipe(Effect.provide(layerServerSettings())),
+  );
+  it.effect("derives and broadcasts favorites from the current placement profiles", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsModule.ServerSettingsService;
+        const { settingsPath } = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const manual = { provider: ProviderInstanceId.make("codex_work"), model: "sol" };
+        const stale = { provider: PLACEMENT_INSTANCE_ID, model: "old" };
+        const profile = { label: "Profile", entries: [] };
+        const favorites = [manual, stale];
+
+        yield* service.updateSettings({
+          autoFavoritePlacementProfiles: true,
+          placementProfiles: { old: profile },
+          favorites,
+        });
+        const changes = yield* service.subscribeChanges;
+        yield* service.updateSettings({
+          placementProfiles: { renamed: profile, added: profile },
+        });
+        const expected = [
+          manual,
+          { provider: PLACEMENT_INSTANCE_ID, model: "renamed" },
+          { provider: PLACEMENT_INSTANCE_ID, model: "added" },
+        ];
+        assert.deepEqual((yield* service.getSettings).favorites, expected);
+        assert.deepEqual(Option.getOrThrow(yield* Stream.runHead(changes)).favorites, expected);
+        assert.deepEqual(
+          (yield* decodeServerSettingsJson(yield* fs.readFileString(settingsPath))).favorites,
+          favorites,
+        );
+        assert.deepEqual((yield* service.updateSettings({ placementProfiles: {} })).favorites, [
+          manual,
+        ]);
+        assert.deepEqual(
+          (yield* service.updateSettings({ autoFavoritePlacementProfiles: false })).favorites,
+          favorites,
+        );
+      }),
+    ).pipe(Effect.provide(layerServerSettings())),
   );
   it.effect("persists and broadcasts model preferences to other connected clients", () =>
     Effect.scoped(

@@ -623,6 +623,9 @@ export function isProviderNativeSubagentThread(
 
 export const IDLE_COMPACTION_TEXT = "/compact";
 
+/** Message IDs of the compactions placement queues before it moves or compacts a thread. */
+export const PLACEMENT_COMPACTION_MESSAGE_ID_PREFIX = "placement-compact:";
+
 interface CompactionMessageFields {
   readonly role: string;
   readonly text: string;

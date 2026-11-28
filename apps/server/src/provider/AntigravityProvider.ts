@@ -407,12 +407,43 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
       ),
   });
 
+  const gatewayModels = [
+    ...new Set(
+      (options.environment?.AGY_LLM_GATEWAY_MODELS ?? "")
+        .split(",")
+        .map((slug) => slug.trim())
+        .filter(Boolean),
+    ),
+  ];
+  // A resumed ACP session can advertise the stock Gemini catalog. The gateway
+  // launcher can only serve its configured routes; don't publish that session's
+  // catalog over the working provider list (including a cached list at boot).
+  const gatewayCatalog = (
+    previous: ReadonlyArray<ServerProviderModel>,
+    observed: ReadonlyArray<ServerProviderModel>,
+  ) => {
+    if (gatewayModels.length === 0) return observed;
+    const bySlug = new Map([...previous, ...observed].map((model) => [model.slug, model]));
+    return gatewayModels.flatMap((slug) => {
+      const model = bySlug.get(slug);
+      return model ? [model] : [];
+    });
+  };
+
   const onSessionStarted = Effect.fn("AntigravityProvider.onSessionStarted")(function* (
     started: AcpSessionRuntime.AcpSessionRuntimeStartResult,
     cwd?: string,
     session?: { readonly resumed?: boolean },
   ) {
     if (!settings.enabled) return;
+    if (
+      gatewayModels.length > 0 &&
+      !buildAntigravityModelsFromSession(started.sessionSetupResult).some((model) =>
+        gatewayModels.includes(model.slug),
+      )
+    ) {
+      return;
+    }
     const authoritative = session?.resumed !== true;
     if (authoritative) {
       const modelSlug = sessionModelSlug(started.sessionSetupResult);
@@ -447,10 +478,13 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
             label: options.auth?.label ?? "Google account",
           },
           checkedAt: updatedAt,
-          models: buildAntigravityModelsFromSession(started.sessionSetupResult, thinkingLevels, {
-            defaultModel: defaultModelSlug,
-            authoritative,
-          }),
+          models: gatewayCatalog(
+            draft.models,
+            buildAntigravityModelsFromSession(started.sessionSetupResult, thinkingLevels, {
+              defaultModel: defaultModelSlug,
+              authoritative,
+            }),
+          ),
           supportedRuntimeModes,
           supportsTextGeneration,
           ...(cwd
@@ -487,10 +521,11 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
       authoritative,
     });
     yield* SubscriptionRef.updateSome(metadata, (state) => {
-      if (state.draft.auth.status !== "authenticated" || Equal.equals(state.draft.models, models)) {
+      const next = gatewayCatalog(state.draft.models, models);
+      if (state.draft.auth.status !== "authenticated" || Equal.equals(state.draft.models, next)) {
         return Option.none();
       }
-      return Option.some({ ...state, draft: { ...state.draft, models } });
+      return Option.some({ ...state, draft: { ...state.draft, models: next } });
     });
   });
 

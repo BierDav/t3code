@@ -5707,5 +5707,12 @@
   "f6cf1627f4acc5ef": "评论可见范围",
   "eb1fd384ad5919dd": "内部备注",
   "b45f0b467e9406d0": "回复客户",
-  "15e5597f8f93ce12": "{start} 至 {end}"
+  "15e5597f8f93ce12": "{start} 至 {end}",
+  "dbe712c0cc825386": "无法连接 Prism",
+  "98aace61f8936fe9": "{environment} 无法连接 Prism",
+  "a87695d39c9d0070": "T3 Code 正在使用已保存的配置方案和本地用量数据。",
+  "fad87ebab2c81248": "正通过 HTTP 与 Prism 同步",
+  "94e808c2d52a69d8": "{environment} 正通过 HTTP 与 Prism 同步",
+  "78ee73d7b1b08a27": "实时连接中断期间，配置方案和用量仍会同步。",
+  "acb0283f2ec3a438": "关闭 Prism 通知"
 }

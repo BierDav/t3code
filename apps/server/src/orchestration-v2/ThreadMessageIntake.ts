@@ -3,18 +3,39 @@ import { appendUserInputAttachmentPaths } from "../provider/userInputAttachments
 import {
   AuthProvidersManageScope,
   type ChatAttachment,
+  type ModelSelection,
   type OrchestrationV2Command,
+  type ProjectId,
 } from "@t3tools/contracts";
+import {
+  placementAdmission,
+  placementProfileOfTags,
+  placementReturnTarget,
+  sameEntry,
+  sameSelection,
+} from "@t3tools/shared/placement";
+import { availableAccountSelection } from "@t3tools/shared/usageLimits";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 import { resolveAttachmentPath } from "../attachmentStore.ts";
 import { rpcAuthorizationError } from "../auth/RpcAuthorization.ts";
 import * as ServerConfig from "../config.ts";
+import { decideProfile, PlacementBookRef } from "../placement/PlacementBook.ts";
+import {
+  noPlacementCapacity,
+  placementTagCommands,
+  resolvePlacementPick,
+  pickLeavesProfile,
+  staysInProfile,
+} from "../placement/placementPick.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 
 import * as AttachmentClaims from "./AttachmentClaims.ts";
-import { isProviderSignOutPrompt } from "./CommandPolicy.ts";
+import { AccountFallback, isProviderSignOutPrompt } from "./CommandPolicy.ts";
 import * as ThreadLaunch from "./ThreadLaunchService.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 
@@ -123,20 +144,245 @@ export const withQueuedAttachmentsOnSignOutText = Effect.fn(
 });
 
 /**
+ * For a thread tagged `placement:<id>`: the account its next turn should run on. The send's
+ * account (an explicit pick inside the profile, else the thread's) stays until it must be left,
+ * or, for the thread's own account after `idleMs` without a run, until the profile's pick ranks
+ * above it again (`placementReturnTarget`).
+ */
+const placementSelection = Effect.fn("ThreadMessageIntake.placementSelection")(function* (input: {
+  readonly profileId: string | null;
+  readonly current: ModelSelection;
+  readonly requested: ModelSelection | undefined;
+  readonly projectId: ProjectId;
+  readonly idleMs: number;
+}) {
+  const none = { inProfile: false, selection: null, error: null } as const;
+  if (input.profileId === null) return none;
+  const settings = yield* ServerSettings.ServerSettingsService.pipe(
+    Effect.flatMap((service) => service.getSettings),
+    Effect.orElseSucceed(() => null),
+  );
+  if (settings === null || settings.placementProfiles[input.profileId] === undefined) return none;
+  const providers = yield* ProviderRegistry.ProviderRegistry.pipe(
+    Effect.flatMap((registry) => registry.getProviders),
+  );
+  const book = yield* PlacementBookRef;
+  const decision = decideProfile(book, {
+    profileId: input.profileId,
+    settings,
+    providers,
+    now: DateTime.toEpochMillis(yield* DateTime.now),
+    projectId: input.projectId,
+  });
+  const ownAccount = input.requested === undefined || sameEntry(input.requested, input.current);
+  if (decision === null) return none;
+  const selection =
+    (ownAccount ? placementReturnTarget(decision, input.current, input.idleMs)?.to : null) ??
+    placementAdmission(decision, input.requested ?? input.current);
+  return {
+    inProfile: true,
+    selection,
+    error: selection === null ? noPlacementCapacity(decision.label) : null,
+  } as const;
+});
+
+/** Null unless the user lets sends move off an account that is out of usage. */
+const readAccountChoice = Effect.fn("ThreadMessageIntake.readAccountChoice")(function* () {
+  const settings = yield* ServerSettings.ServerSettingsService.pipe(
+    Effect.flatMap((service) => service.getSettings),
+    Effect.orElseSucceed(() => null),
+  );
+  if (!settings?.fallbackToAvailableAccounts) return null;
+  const providers = yield* ProviderRegistry.ProviderRegistry.pipe(
+    Effect.flatMap((registry) => registry.getProviders),
+  );
+  const now = DateTime.toEpochMillis(yield* DateTime.now);
+  return (selection: ModelSelection, projectId: ProjectId) =>
+    availableAccountSelection({ selection, providers, now, settings, projectId }) ?? selection;
+});
+
+const withAvailableAccount = Effect.fn("ThreadMessageIntake.withAvailableAccount")(function* (
+  command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
+) {
+  // Steering stays on the active run's account; server continuations validate their own.
+  if (
+    command.dispatchMode.type === "steer_active" ||
+    command.dispatchMode.type === "restart_active" ||
+    command.manualContinuationOfRunId !== undefined ||
+    command.usageLimitContinuationOfRunId !== undefined ||
+    command.restartContinuationOfRunId !== undefined
+  ) {
+    return { command, fallback: undefined };
+  }
+  const current = yield* ServerSettings.ServerSettingsService.pipe(
+    Effect.flatMap((service) => service.getSettings),
+    Effect.orElseSucceed(() => null),
+  );
+  if (
+    current === null ||
+    (!current.fallbackToAvailableAccounts && Object.keys(current.placementProfiles).length === 0)
+  ) {
+    return { command, fallback: undefined };
+  }
+  const threads = yield* ThreadManagement.ThreadManagementService;
+  const records = yield* threads
+    .getThreadRecords(command.threadId, [])
+    .pipe(Effect.orElseSucceed(() => null));
+  if (records === null) return { command, fallback: undefined };
+  const { thread } = records;
+  const selection = command.modelSelection ?? thread.modelSelection;
+  const profileId = placementProfileOfTags(thread.tags);
+  // Only a profile thread needs to know how long it has been idle.
+  const shell =
+    profileId === null
+      ? null
+      : yield* threads.getThreadShell(command.threadId).pipe(Effect.orElseSucceed(() => null));
+  const lastActive = shell?.latestRunCompletedAt ?? shell?.updatedAt ?? thread.updatedAt;
+  const now = DateTime.toEpochMillis(yield* DateTime.now);
+  const placed = yield* placementSelection({
+    profileId,
+    current: thread.modelSelection,
+    requested: command.modelSelection,
+    projectId: thread.projectId,
+    // Unknown: treat the thread as active, so it keeps its account.
+    idleMs: lastActive === undefined ? 0 : now - DateTime.toEpochMillis(lastActive),
+  });
+  if (placed.error !== null) {
+    if (yield* threads.hasReceipt(command.commandId)) return { command, fallback: undefined };
+    return yield* placed.error;
+  }
+  // A thread in a placement profile is scheduled by it, not by the account fallback.
+  const choose = placed.inProfile ? null : yield* readAccountChoice();
+  if (!placed.inProfile && choose === null) return { command, fallback: undefined };
+  const next = placed.inProfile
+    ? (placed.selection ?? selection)
+    : choose!(selection, thread.projectId);
+  // Clients send the composer's model with every message. In a profile thread that is the
+  // thread's own account, and a copy of it would pin a queued message there: when placement
+  // moves the thread before the message starts, it would still run on the account left.
+  if (
+    placed.inProfile &&
+    command.modelSelection !== undefined &&
+    sameSelection(next, thread.modelSelection)
+  ) {
+    const { modelSelection: _ownAccount, ...followsThread } = command;
+    return { command: followsThread, fallback: undefined };
+  }
+  return {
+    command: next === selection ? command : { ...command, modelSelection: next },
+    fallback:
+      next === selection
+        ? undefined
+        : {
+            commandId: command.commandId,
+            threadSelection: thread.modelSelection,
+            requestedSelection: command.modelSelection,
+          },
+  };
+});
+
+/**
  * `sender.managesProviders` is whether the caller holds `providers:manage`. RPC authorization
  * has already checked every command whose payload shows a provider sign-out; a queued edit
  * that keeps its attachments is the one case decided here.
  */
-export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(function* (
+/**
+ * A pick of the placement provider becomes the account its profile chooses, and the thread
+ * joins that profile; an account outside the thread's profile takes it out of the profile.
+ * Tag changes on an existing thread land before the command, so the send sees them; a new
+ * thread is tagged once it exists.
+ */
+const withPlacementPick = Effect.fn("ThreadMessageIntake.withPlacementPick")(function* (
+  command: OrchestrationV2Command,
+) {
+  const none = { command, after: Effect.void, blockedProfile: null };
+  if (command.type === "thread.create") {
+    const picked = yield* resolvePlacementPick({
+      selection: command.modelSelection,
+      projectId: command.projectId,
+    });
+    if (picked === null) return none;
+    if (picked.selection === null) return { ...none, blockedProfile: picked.profileId };
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    return {
+      command: { ...command, modelSelection: picked.selection },
+      blockedProfile: null,
+      after: Effect.forEach(
+        placementTagCommands({
+          threadId: command.threadId,
+          tags: [],
+          profileId: picked.profileId,
+          commandId: command.commandId,
+        }),
+        (tag) => threads.dispatch(tag),
+        { discard: true },
+      ).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("placement.tag-failed", { threadId: command.threadId, cause }),
+        ),
+      ),
+    };
+  }
+  if (command.type !== "message.dispatch" && command.type !== "thread.model-selection.set") {
+    return none;
+  }
+  const requested = command.modelSelection;
+  if (requested === undefined) return none;
+  const threads = yield* ThreadManagement.ThreadManagementService;
+  const records = yield* threads
+    .getThreadRecords(command.threadId, [])
+    .pipe(Effect.orElseSucceed(() => null));
+  if (records === null) return none;
+  const { thread } = records;
+  const tags = thread.tags ?? [];
+  const profileId = placementProfileOfTags(tags);
+  const picked = yield* resolvePlacementPick({
+    selection: requested,
+    projectId: thread.projectId,
+    current: thread.modelSelection,
+  });
+  if (picked !== null && picked.selection === null)
+    return { ...none, blockedProfile: picked.profileId };
+  const nextProfile =
+    picked !== null
+      ? picked.profileId
+      : pickLeavesProfile(command.type, requested, thread.modelSelection)
+        ? null
+        : profileId !== null && !(yield* staysInProfile(profileId, requested))
+          ? null
+          : profileId;
+  yield* Effect.forEach(
+    placementTagCommands({
+      threadId: thread.id,
+      tags,
+      profileId: nextProfile,
+      commandId: command.commandId,
+    }),
+    (tag) => threads.dispatch(tag),
+    { discard: true },
+  );
+  return {
+    command: picked?.selection ? { ...command, modelSelection: picked.selection } : command,
+    after: Effect.void,
+    blockedProfile: null,
+  };
+});
+
+const dispatchPrepared = Effect.fn("ThreadMessageIntake.dispatchPrepared")(function* (
   incoming: OrchestrationV2Command,
   sender: { readonly managesProviders: boolean },
 ) {
-  const command =
+  const prepared =
     incoming.type === "message.dispatch"
-      ? yield* withGuestAttachments(incoming)
-      : incoming.type === "queued-run.edit" && !sender.managesProviders
-        ? yield* withQueuedAttachmentsOnSignOutText(incoming)
-        : incoming;
+      ? yield* withAvailableAccount(yield* withGuestAttachments(incoming))
+      : {
+          command:
+            incoming.type === "queued-run.edit" && !sender.managesProviders
+              ? yield* withQueuedAttachmentsOnSignOutText(incoming)
+              : incoming,
+          fallback: undefined,
+        };
+  const { command } = prepared;
   const threads = yield* ThreadManagement.ThreadManagementService;
   if (command.type === "runtime-request.respond" && command.attachmentsByQuestionId) {
     const config = yield* ServerConfig.ServerConfig;
@@ -263,6 +509,7 @@ export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(
         : {}),
     })
     .pipe(
+      Effect.provideService(AccountFallback, prepared.fallback),
       Effect.tap((result) =>
         releaseUnusedClaims(
           claimed.claimedPaths,
@@ -277,6 +524,23 @@ export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(
           : Effect.void,
       ),
     );
+});
+
+export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(function* (
+  incoming: OrchestrationV2Command,
+  sender: { readonly managesProviders: boolean },
+) {
+  const picked = yield* withPlacementPick(incoming).pipe(
+    Effect.catchCause((cause) =>
+      Effect.logWarning("placement.pick-failed", { commandId: incoming.commandId, cause }).pipe(
+        Effect.as({ command: incoming, after: Effect.void, blockedProfile: null }),
+      ),
+    ),
+  );
+  if (picked.blockedProfile !== null) return yield* noPlacementCapacity(picked.blockedProfile);
+  const result = yield* dispatchPrepared(picked.command, sender);
+  yield* picked.after;
+  return result;
 });
 
 export const sendToThread = Effect.fn("ThreadMessageIntake.sendToThread")(function* (
@@ -295,9 +559,14 @@ export const sendToThread = Effect.fn("ThreadMessageIntake.sendToThread")(functi
 });
 
 export const launchThread = Effect.fn("ThreadMessageIntake.launchThread")(function* (
-  input: ThreadLaunch.ThreadLaunchInput,
+  requested: ThreadLaunch.ThreadLaunchInput,
 ) {
   const launches = yield* ThreadLaunch.ThreadLaunchService;
+  const choose = yield* readAccountChoice();
+  const input =
+    choose === null
+      ? requested
+      : { ...requested, modelSelection: choose(requested.modelSelection, requested.projectId) };
   yield* AttachmentClaims.validateAttachmentLimits(input.initialMessage?.attachments ?? []);
   if (!input.initialMessage?.attachments.some(AttachmentClaims.attachmentIsPendingUpload)) {
     return yield* launches.launch(input);
@@ -336,7 +605,11 @@ export const launchThread = Effect.fn("ThreadMessageIntake.launchThread")(functi
         ),
       ),
       Effect.tapError((error) => {
-        if (error._tag === "ThreadManagementProviderInstanceDisabledError") {
+        // No account could take the launch: nothing was dispatched.
+        if (
+          error._tag === "ThreadManagementProviderInstanceDisabledError" ||
+          error._tag === "PlacementCapacityError"
+        ) {
           return AttachmentClaims.releaseClaimedAttachments(claimed.claimedPaths);
         }
         // Project/receipt reads precede dispatch; create-thread errors can wrap post-message reads and prove nothing alone.

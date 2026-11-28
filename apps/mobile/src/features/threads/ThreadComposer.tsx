@@ -22,6 +22,7 @@ import {
   type ServerConfig as T3ServerConfig,
   type UsageLimitsReport,
 } from "@t3tools/contracts";
+import { placementDisplaySelection } from "@t3tools/shared/placement";
 import {
   collectProviderUsageLimits,
   hasProviderUsageLimits,
@@ -702,14 +703,30 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     </>
   ) : null;
 
+  const displayModelSelection = placementDisplaySelection({
+    selection: currentModelSelection,
+    tags: props.selectedThread.tags,
+    placementProfiles: props.serverConfig?.settings.placementProfiles,
+  });
+  const displayProviderStatus =
+    props.serverConfig?.providers.find(
+      (provider) => provider.instanceId === displayModelSelection.instanceId,
+    ) ?? selectedProviderStatus;
+  const displayModelOption =
+    modelOptions.find(
+      (option) =>
+        option.selection.instanceId === displayModelSelection.instanceId &&
+        option.selection.model === displayModelSelection.model,
+    ) ?? currentModelOption;
+
   const modelControl = (
     // Only the expanded label can truncate; shrinking the icon-only control clips the icon.
     <View className={compactEditor.isExpanded ? "min-w-0 shrink" : "shrink-0"}>
       <ComposerModelControl
         size={usesLargeControls ? "large" : "regular"}
-        modelOption={currentModelOption}
-        selection={currentModelSelection}
-        provider={selectedProviderStatus?.driver}
+        modelOption={displayModelOption}
+        selection={displayModelSelection}
+        provider={displayProviderStatus?.driver}
         reportedSelection={props.reportedModelSelection}
         prompt={draftMessage}
         surfaceColor={composerPanel}

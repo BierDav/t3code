@@ -1,8 +1,8 @@
-import type { EnvironmentId, UsageLimitsReport } from "@t3tools/contracts";
+import type { EnvironmentId, PrismConnectionStatus, UsageLimitsReport } from "@t3tools/contracts";
 import type { TimestampFormat } from "@t3tools/contracts/settings";
 import { limitsNotice } from "@t3tools/shared/usageLimitsCopy";
 import { msg, T, useGT, useMessages } from "gt-react";
-import { GaugeIcon } from "lucide-react";
+import { CloudIcon, CloudOffIcon, GaugeIcon } from "lucide-react";
 
 import { m, type MessageResolver } from "../../i18n/messages";
 import { ensureLocalApi } from "../../localApi";
@@ -80,6 +80,7 @@ export function usageLimitsBannerItem(
 export function modelFallbackBannerItem(
   {
     fallbackModelName,
+    fallbackProviderName,
     defaultProviderName,
     defaultModelName,
     resetsAt,
@@ -88,6 +89,7 @@ export function modelFallbackBannerItem(
     onDismiss,
   }: {
     readonly fallbackModelName: string;
+    readonly fallbackProviderName: string;
     readonly defaultProviderName: string;
     readonly defaultModelName: string;
     readonly resetsAt: string | null;
@@ -101,7 +103,12 @@ export function modelFallbackBannerItem(
     id: "fallback-model",
     variant: "info",
     icon: <GaugeIcon />,
-    title: resolve(msg("Using {model}", { model: fallbackModelName })),
+    title: resolve(
+      msg("Using {model} on {provider}", {
+        model: fallbackModelName,
+        provider: fallbackProviderName,
+      }),
+    ),
     description: resetsAt
       ? resolve(
           msg("{provider} is out of usage · resets {time}", {
@@ -124,6 +131,58 @@ export function modelFallbackBannerItem(
     dismissLabel: resolve(msg("Dismiss fallback model notice")),
     onDismiss,
   };
+}
+
+/**
+ * The composer's notice while its machine has no live Prism stream. Offline, placement falls back
+ * to saved profiles and local usage readings; over HTTP it still syncs, only less promptly.
+ * `environmentLabel` names the machine when the user has more than one.
+ */
+export function prismConnectionBannerItem(
+  {
+    status,
+    environmentLabel,
+    onDismiss,
+  }: {
+    readonly status: PrismConnectionStatus | undefined;
+    readonly environmentLabel: string | null;
+    readonly onDismiss: () => void;
+  },
+  resolve: MessageResolver = m,
+): ComposerBannerStackItem | null {
+  if (status === "offline") {
+    return {
+      id: "prism-connection",
+      variant: "warning",
+      group: "environment",
+      icon: <CloudOffIcon />,
+      title:
+        environmentLabel === null
+          ? resolve(msg("Prism is unreachable"))
+          : resolve(msg("{environment} can't reach Prism", { environment: environmentLabel })),
+      description: resolve(msg("T3 Code is using saved profiles and local usage data.")),
+    };
+  }
+  if (status === "http") {
+    return {
+      id: "prism-connection",
+      variant: "info",
+      group: "environment",
+      icon: <CloudIcon />,
+      title:
+        environmentLabel === null
+          ? resolve(msg("Syncing with Prism over HTTP"))
+          : resolve(
+              msg("{environment} is syncing with Prism over HTTP", {
+                environment: environmentLabel,
+              }),
+            ),
+      description: resolve(msg("Profiles and usage still sync while the live connection is down.")),
+      dismissLabel: resolve(msg("Dismiss Prism notice")),
+      onDismiss,
+    };
+  }
+  return null;
 }
 
 function UsageLimitsBannerBody({

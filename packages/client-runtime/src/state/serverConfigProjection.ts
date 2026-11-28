@@ -17,10 +17,19 @@ export interface ServerConfigProjection {
  * cache could restore a set the machine no longer reports.
  */
 export function withoutEnvironmentThemes(config: ServerConfig): ServerConfig {
-  if (config.environmentThemes === undefined && config.usageLimitSources === undefined) {
+  if (
+    config.environmentThemes === undefined &&
+    config.usageLimitSources === undefined &&
+    config.prismConnection === undefined
+  ) {
     return config;
   }
-  const { environmentThemes: _themes, usageLimitSources: _sources, ...rest } = config;
+  const {
+    environmentThemes: _themes,
+    usageLimitSources: _sources,
+    prismConnection: _prism,
+    ...rest
+  } = config;
   return rest;
 }
 

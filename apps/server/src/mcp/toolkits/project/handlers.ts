@@ -21,6 +21,13 @@ import { OrchestratorRuntimeModeAboveCeilingError } from "../../../orchestration
 import { outputRequestProblem } from "../../../orchestration-v2/runOutput.ts";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
+import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
+import { launchSelection } from "../../../placement/placementLaunch.ts";
+import {
+  placementProfileChoices,
+  placementTag,
+  resolvePlacementProfileId,
+} from "@t3tools/shared/placement";
 import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
 import * as Project from "../../../project/ProjectService.ts";
 import * as ProjectCloneTracker from "../../../project/ProjectCloneTracker.ts";
@@ -432,8 +439,53 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
         // project's effective defaults, as the composer does. Its mode stays
         // within the ceiling it was approved with.
         const projectDefaults = caller === undefined ? projectSettings : undefined;
+        const placementSettings =
+          input.placementProfile === undefined || input.placementProfile === "" || replaying
+            ? null
+            : yield* ServerSettings.ServerSettingsService.pipe(
+                Effect.flatMap((settings) => settings.getSettings),
+                Effect.mapError(unavailable),
+              );
+        if (placementSettings !== null && input.modelSelection !== undefined) {
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message:
+              "Pass `placementProfile` or `modelSelection`, not both: a profile picks the model, a selection pins one.",
+          });
+        }
+        const placementProfileId =
+          placementSettings === null
+            ? null
+            : resolvePlacementProfileId(
+                placementSettings.placementProfiles,
+                input.placementProfile!,
+              );
+        if (placementSettings !== null && placementProfileId === null) {
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: `No placement profile "${input.placementProfile}". Pass one of: ${placementProfileChoices(placementSettings.placementProfiles)}.`,
+          });
+        }
+        const placedSelection =
+          placementProfileId === null || placementSettings === null
+            ? null
+            : yield* launchSelection({
+                profileId: placementProfileId,
+                settings: placementSettings,
+                providers: yield* ProviderRegistry.ProviderRegistry.pipe(
+                  Effect.flatMap((registry) => registry.getProviders),
+                ),
+                projectId,
+              });
+        if (placementProfileId !== null && placedSelection === null) {
+          return yield* new OrchestratorMcpFailure({
+            code: "model_unavailable",
+            message: `No account in the "${placementProfileId}" profile can take new work right now.`,
+          });
+        }
         const modelSelection =
           validatedModelSelection ??
+          placedSelection ??
           launchedModel ??
           caller?.modelSelection ??
           (projectDefaults
@@ -527,6 +579,22 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           }),
         );
         const thread = result.projection.thread;
+        if (placementProfileId !== null) {
+          yield* ThreadManagement.ThreadManagementService.pipe(
+            Effect.flatMap((threads) =>
+              threads.dispatch({
+                type: "thread.tag.set",
+                commandId: CommandId.make(`${commandId}:placement-tag`),
+                threadId: thread.id,
+                tag: placementTag(placementProfileId),
+                tagged: true,
+              }),
+            ),
+            Effect.catchCause((cause) =>
+              Effect.logWarning("placement.launch-tag-failed", { threadId: thread.id, cause }),
+            ),
+          );
+        }
         const run = result.projection.runs.find((run) => run.userMessageId === messageId);
         return {
           threadId: thread.id,

@@ -44,3 +44,29 @@ export function claudeResumeCompactionAge(questionAnswer: {
  * idleCompaction default of 200K.
  */
 export const COMPACTION_SUGGESTION_MIN_TOKENS = 200_000;
+
+/**
+ * Context size above which switching accounts on the same provider (e.g.
+ * claude-david -> claude-1) compacts before sending, since the new account
+ * cannot read the previous account's prompt cache.
+ */
+export const COMPACTION_ACCOUNT_SWITCH_MIN_TOKENS = 100_000;
+
+/**
+ * Default prompt cache TTL in milliseconds per provider driver, used when a
+ * turn does not report an explicit `promptCacheExpiresAt` / `promptCacheTtlMs`.
+ * Providers whose cache TTL is unknown or not applicable return undefined.
+ */
+const PROVIDER_DEFAULT_PROMPT_CACHE_TTL_MS: Readonly<Record<string, number>> = {
+  // Anthropic prompt cache: 1h on subscriptions (explicitly reported by ClaudeAdapterV2), 5m on API keys.
+  claudeAgent: 60 * 60_000,
+  // OpenAI / Codex prompt cache: 5–10m standard, up to 1h/24h extended; 10m conservative default.
+  codex: 10 * 60_000,
+  // Antigravity (Gemini / Claude): 10m conservative default when not explicitly reported.
+  antigravity: 10 * 60_000,
+};
+
+export function defaultPromptCacheTtlMs(driver: string | null | undefined): number | undefined {
+  if (driver == null) return undefined;
+  return PROVIDER_DEFAULT_PROMPT_CACHE_TTL_MS[driver];
+}

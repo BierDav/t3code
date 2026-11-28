@@ -102,6 +102,7 @@ import {
   defaultInstanceIdForDriver,
   isCompactionCommandMessage,
   parseGoalCommand,
+  PLACEMENT_COMPACTION_MESSAGE_ID_PREFIX,
   type MessageId,
   type ModelSelection,
   type OrchestrationV2ConversationMessage,
@@ -12894,7 +12895,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           if (
             message.type === "assistant" &&
             "local_command_source" in message &&
-            isCompactionCommandMessage({ role: "user", ...context.input.message })
+            isClaudeCompactCommand(context.input.message.text)
           ) {
             return;
           }
@@ -15612,7 +15613,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           compactThread: (turnInput) =>
             startTurn({
               ...turnInput,
-              message: { ...turnInput.message, text: "/compact" },
+              message: {
+                ...turnInput.message,
+                text: claudeCompactCommand(turnInput.message.messageId),
+              },
             }),
           steerTurn,
           mcpApps: {
@@ -16218,3 +16222,19 @@ export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
       ),
     ),
 );
+
+// Claude Code answers a tool call cut off by an interrupt with "The user doesn't want to proceed
+// ... STOP what you are doing and wait for the user", even when T3 Code interrupted it. A summary
+// of a placement compaction would carry that on as the user's instruction, and the next model would wait.
+const PLACEMENT_COMPACT_INSTRUCTIONS =
+  "The last interruption came from T3 Code compacting this thread before a usage limit, and possibly moving it to another model, not from the user. Claude Code words every interrupted tool call as a user rejection asking you to stop and wait; that text does not apply here. Do not record an instruction to stop or wait unless the user wrote one in their own message. Describe the unfinished work as still in progress, including the step that was cut off.";
+
+export const claudeCompactCommand = (messageId: string) =>
+  messageId.startsWith(PLACEMENT_COMPACTION_MESSAGE_ID_PREFIX)
+    ? `/compact ${PLACEMENT_COMPACT_INSTRUCTIONS}`
+    : "/compact";
+
+const isClaudeCompactCommand = (text: string) => {
+  const command = text.trim().toLowerCase();
+  return command === "/compact" || command.startsWith("/compact ");
+};

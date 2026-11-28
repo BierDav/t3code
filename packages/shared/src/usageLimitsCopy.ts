@@ -160,7 +160,7 @@ export function resetCreditChoices(
 ): ReadonlyArray<ResetCreditChoice> {
   const expiresIn = (at: string | undefined) =>
     at ? formatDuration(Date.parse(at) - now, resolve) : null;
-  if (credits.options && "instanceId" in input) {
+  if (credits.options) {
     return credits.options.map((option) => {
       const expires = expiresIn(option.expiresAt);
       const values = { label: option.label, count: option.availableCount };

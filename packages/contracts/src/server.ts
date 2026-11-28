@@ -739,6 +739,9 @@ export const ServerFeatureFlags = Schema.Struct({
 });
 export type ServerFeatureFlags = typeof ServerFeatureFlags.Type;
 
+export const PrismConnectionStatus = Schema.Literals(["connected", "http", "offline"]);
+export type PrismConnectionStatus = typeof PrismConnectionStatus.Type;
+
 export const ServerConfig = Schema.Struct({
   environment: ExecutionEnvironmentDescriptor,
   auth: ServerAuthDescriptor,
@@ -791,6 +794,7 @@ export const ServerConfig = Schema.Struct({
    * answering. Clients do not cache it, since it describes the host at connect.
    */
   lastEventLoopStall: Schema.optionalKey(ServerEventLoopStall),
+  prismConnection: Schema.optionalKey(PrismConnectionStatus),
   /**
    * The host's clock when it built the config, so clients can count live
    * elapsed times against host timestamps despite clock skew. Only a

@@ -5704,5 +5704,12 @@
   "f6cf1627f4acc5ef": "댓글 공개 범위",
   "eb1fd384ad5919dd": "내부 메모",
   "b45f0b467e9406d0": "고객에게 답변",
-  "15e5597f8f93ce12": "{start}~{end}"
+  "15e5597f8f93ce12": "{start}~{end}",
+  "dbe712c0cc825386": "Prism에 연결할 수 없습니다",
+  "98aace61f8936fe9": "{environment}에서 Prism에 연결할 수 없습니다",
+  "a87695d39c9d0070": "T3 Code가 저장된 프로필과 로컬 사용량 데이터를 사용하고 있습니다.",
+  "fad87ebab2c81248": "HTTP를 통해 Prism과 동기화 중",
+  "94e808c2d52a69d8": "{environment}이(가) HTTP를 통해 Prism과 동기화 중입니다",
+  "78ee73d7b1b08a27": "실시간 연결이 끊긴 동안에도 프로필과 사용량은 계속 동기화됩니다.",
+  "acb0283f2ec3a438": "Prism 알림 닫기"
 }

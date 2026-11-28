@@ -5720,5 +5720,12 @@
   "f6cf1627f4acc5ef": "Visibilidad del comentario",
   "eb1fd384ad5919dd": "Nota interna",
   "b45f0b467e9406d0": "Responder al cliente",
-  "15e5597f8f93ce12": "{start} a {end}"
+  "15e5597f8f93ce12": "{start} a {end}",
+  "dbe712c0cc825386": "Prism no está disponible",
+  "98aace61f8936fe9": "{environment} no puede conectarse a Prism",
+  "a87695d39c9d0070": "T3 Code está usando los perfiles guardados y los datos de uso locales.",
+  "fad87ebab2c81248": "Sincronizando con Prism por HTTP",
+  "94e808c2d52a69d8": "{environment} se está sincronizando con Prism por HTTP",
+  "78ee73d7b1b08a27": "Los perfiles y el uso se siguen sincronizando mientras la conexión en vivo no está disponible.",
+  "acb0283f2ec3a438": "Descartar aviso de Prism"
 }

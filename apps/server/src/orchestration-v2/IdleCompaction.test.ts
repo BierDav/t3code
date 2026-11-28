@@ -220,21 +220,79 @@ describe("idleCompactionWindow", () => {
         result: null,
       },
     ];
-    expect(idleCompactionWindow(delegating, NOW_MS)?.runId).toBe(runId);
+    const window = idleCompactionWindow(delegating, NOW_MS);
+    expect(window?.runId).toBe(runId);
+    expect(window?.keepAlive).toBe(true);
+    expect(window!.endMs - window!.startMs).toBe(5 * MINUTE_MS);
+  });
+
+  it("compacts 5 minutes before cache expiry when waiting on a background task or Codex delegate", () => {
+    const bg = records({ cacheExpiresInMs: 60 * MINUTE_MS });
+    bg.providerThreads = [
+      {
+        ...bg.providerThreads[0]!,
+        pendingBackgroundTasks: [{ taskId: "bg-1", description: "cargo test", kind: "command" }],
+      },
+    ];
+    const bgWindow = idleCompactionWindow(bg, NOW_MS);
+    expect(bgWindow?.runId).toBe(runId);
+    expect(bgWindow?.keepAlive).toBe(true);
+    expect(bgWindow!.endMs - bgWindow!.startMs).toBe(5 * MINUTE_MS);
+
+    const codexDelegate = records();
+    codexDelegate.providerThreads = [
+      { ...codexDelegate.providerThreads[0]!, driver: ProviderDriverKind.make("codex") },
+    ];
+    codexDelegate.turnItems = [
+      {
+        id: TurnItemId.make("delegate-codex"),
+        threadId,
+        runId,
+        nodeId: NodeId.make("delegate-node"),
+        providerThreadId,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 1,
+        status: "running",
+        title: "Subtask",
+        startedAt: at(-MINUTE_MS),
+        completedAt: null,
+        updatedAt: at(-MINUTE_MS),
+        type: "subagent",
+        subagentId: NodeId.make("delegate-node"),
+        origin: "app_owned",
+        driver: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        childThreadId: ThreadId.make("delegate-child"),
+        prompt: "Subtask",
+        result: null,
+      },
+    ];
+    const codexWindow = idleCompactionWindow(codexDelegate, NOW_MS);
+    expect(codexWindow?.runId).toBe(runId);
+    expect(codexWindow?.keepAlive).toBe(true);
+    expect(codexWindow!.endMs - codexWindow!.startMs).toBe(5 * MINUTE_MS);
   });
 });
 
 describe("IdleCompactionService", () => {
   it.effect.each([
-    { mode: "onReturn", reads: 0 },
+    { mode: "onReturn", reads: 1, dispatches: 0 },
     { mode: "off", reads: 0 },
     { mode: "beforeCacheExpires", reads: 1 },
     { mode: "beforeCacheExpires", override: "off", reads: 0 },
     { mode: "onReturn", override: "beforeCacheExpires", reads: 1 },
     { mode: "beforeCacheExpires", projectDisabled: true, reads: 0 },
     { mode: "beforeCacheExpires", enabled: false, reads: 0 },
-    { mode: "beforeCacheExpires", driver: "codex", instance: "codex", reads: 0 },
-    { mode: "beforeCacheExpires", driver: "codex", instance: "custom-codex", reads: 0 },
+    { mode: "beforeCacheExpires", driver: "codex", instance: "codex", reads: 1, dispatches: 0 },
+    {
+      mode: "beforeCacheExpires",
+      driver: "codex",
+      instance: "custom-codex",
+      reads: 1,
+      dispatches: 0,
+    },
     { mode: "beforeCacheExpires", driver: "claudeAgent", instance: "custom-claude", reads: 1 },
     { mode: "beforeCacheExpires", unconfigured: true, reads: 1 },
   ] as const)(
@@ -350,7 +408,7 @@ describe("IdleCompactionService", () => {
           yield* Deferred.await(done);
         }).pipe(Effect.provide(dependencies), Effect.withTracer(tracer));
         expect(historyReads).toBe(test.reads);
-        expect(dispatches).toBe(test.reads);
+        expect(dispatches).toBe("dispatches" in test ? test.dispatches : test.reads);
       });
     },
   );

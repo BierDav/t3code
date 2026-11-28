@@ -32,7 +32,8 @@ Usage aggregates history across Codex, Claude Code, Grok Build, OpenCode, Antigr
 **Usage → Limits** pools subscription quotas per provider across connected environments and hubs (deduplicating the same account signed in on multiple machines).
 
 - **In chat**: Run `/usage-limits` in the composer to view the current model's snapshot without running the agent, or enable **Settings → Appearance → Thread details → Usage limits** (web/desktop).
-- **Reset credits**: Click an account segment/row to inspect plan details and redeem banked Codex/Claude reset credits via **Use reset** (Claude resets unavailable on macOS Keychain logins).
+- **Out of usage**: New threads start on the **Fallback model** (**Settings → Threads**) when the default model's account is out of usage. With several accounts of one provider, turn on **Switch to an account with usage left** there: a send, or a thread that hits a 5-hour or weekly limit while working, moves to the same model on another account with usage left (or another provider's default model when none has any). Only accounts listed under **Usage → Limits** are picked; one that just hit a limit is skipped until it resets. Pick the account in the model picker to move back.
+- **Reset credits**: Select an account to redeem banked Codex or Claude resets. T3 cannot redeem credits from a local Claude login stored in the macOS Keychain.
 - **Provider notes**:
   - **OpenCode**: OpenCode 2 servers with usage reporting show Go allowances and Console budgets for the connected workspace. Local servers can also report Go usage from a Go API key (`OPENCODE_API_KEY`).
   - **Cursor**: Reports monthly Auto + API quotas via `CURSOR_AUTH_TOKEN` or default-endpoint sign-in/`CURSOR_API_KEY`.
@@ -43,7 +44,7 @@ Usage aggregates history across Codex, Claude Code, Grok Build, OpenCode, Antigr
 
 ## Connect a CLIProxyAPI hub
 
-Open **Settings → Providers → Usage providers → Add hub**, choose the environment, and enter the hub URL and management key. Pools Codex, Claude, and Grok accounts under **Usage → Limits** (including Codex **Use reset**). Configure the provider's endpoint to the same URL if you want threads to display that hub's limits.
+Open **Settings → Providers → Usage providers → Add hub**, choose the environment, and enter the hub URL and management key. Codex, Claude, and Grok accounts appear under **Usage → Limits**. Select an eligible Codex or Claude account to redeem a banked reset. Configure the provider's endpoint to the same URL if you want threads to display that hub's limits.
 
 ## Connect an HTTP quota source
 

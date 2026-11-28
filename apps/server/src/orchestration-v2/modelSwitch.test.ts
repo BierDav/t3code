@@ -96,6 +96,17 @@ describe("modelSwitchSince", () => {
 
   it("records nothing for a first run or an unchanged selection", () => {
     expect(modelSwitchSince({ runs: [], turnItems: [] }, selection("a"))).toEqual({});
+    expect(
+      modelSwitchSince(
+        { runs: [], turnItems: [], thread: { tags: ["placement:coding"] } },
+        selection("a"),
+      ),
+    ).toEqual({
+      modelSwitch: {
+        from: { instanceId: ProviderInstanceId.make("placement"), model: "coding" },
+        to: selection("a"),
+      },
+    });
     // A fork's first message compares with the run it forked from.
     expect(modelSwitchSince({ runs: [], turnItems: [] }, selection("a"), selection("b"))).toEqual({
       modelSwitch: { from: selection("b"), to: selection("a") },

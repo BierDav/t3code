@@ -7,6 +7,7 @@ import {
   type RunId,
   type ThreadId,
 } from "@t3tools/contracts";
+import { defaultPromptCacheTtlMs } from "@t3tools/shared/claudeCompaction";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -37,12 +38,13 @@ export const make = Effect.gen(function* () {
       while (true) {
         const current = yield* settings.getSettings;
         const thread = yield* projections.getThread(threadId);
-        const claudeInstance = Object.hasOwn(current.providerInstances, thread.providerInstanceId)
-          ? current.providerInstances[thread.providerInstanceId]?.driver === "claudeAgent"
-          : thread.providerInstanceId === "claudeAgent";
+        const driver = Object.hasOwn(current.providerInstances, thread.providerInstanceId)
+          ? current.providerInstances[thread.providerInstanceId]?.driver
+          : thread.providerInstanceId;
+        const idleMode = resolveIdleCompaction(current, thread.providerInstanceId);
         if (
-          !claudeInstance ||
-          resolveIdleCompaction(current, thread.providerInstanceId) !== "beforeCacheExpires" ||
+          defaultPromptCacheTtlMs(driver) === undefined ||
+          idleMode === "off" ||
           !resolveProjectProviderInstanceEnabled(
             current,
             thread.projectId,
@@ -78,9 +80,9 @@ export const make = Effect.gen(function* () {
             contextTransferStatuses: ["pending"],
           },
         );
+        const latestIdleMode = resolveIdleCompaction(current, records.thread.providerInstanceId);
         if (
-          resolveIdleCompaction(current, records.thread.providerInstanceId) !==
-            "beforeCacheExpires" ||
+          latestIdleMode === "off" ||
           !resolveProjectProviderInstanceEnabled(
             current,
             records.thread.projectId,
@@ -102,6 +104,7 @@ export const make = Effect.gen(function* () {
         const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
         const window = idleCompactionWindow(records, nowMs);
         if (window?.runId !== runId) return;
+        if (!window.keepAlive && latestIdleMode !== "beforeCacheExpires") return;
         if (nowMs < window.startMs) {
           yield* Effect.sleep(Duration.millis(window.startMs - nowMs));
           continue;

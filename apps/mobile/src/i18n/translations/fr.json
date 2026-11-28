@@ -5720,5 +5720,12 @@
   "f6cf1627f4acc5ef": "Visibilité du commentaire",
   "eb1fd384ad5919dd": "Note interne",
   "b45f0b467e9406d0": "Répondre au client",
-  "15e5597f8f93ce12": "{start} à {end}"
+  "15e5597f8f93ce12": "{start} à {end}",
+  "dbe712c0cc825386": "Prism est injoignable",
+  "98aace61f8936fe9": "{environment} ne parvient pas à joindre Prism",
+  "a87695d39c9d0070": "T3 Code utilise les profils enregistrés et les données d’utilisation locales.",
+  "fad87ebab2c81248": "Synchronisation avec Prism via HTTP",
+  "94e808c2d52a69d8": "{environment} se synchronise avec Prism via HTTP",
+  "78ee73d7b1b08a27": "Les profils et l’utilisation restent synchronisés tant que la connexion en direct est coupée.",
+  "acb0283f2ec3a438": "Masquer l’avis Prism"
 }

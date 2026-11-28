@@ -25,6 +25,7 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 import { rpcInitialItems } from "./rpcInitialItems.ts";
 import { subscribeChatGptHandoff } from "./provider/CodexChatGptHandoff.ts";
 import {
@@ -93,6 +94,7 @@ import {
   type RelayClientInstallProgressEvent,
   type ServerConfig as ClientServerConfig,
   type ServerConfigStreamEvent,
+  type PrismConnectionStatus,
   type ServerLifecycleStreamEvent,
   type ServerProvider,
   serverProviderDeltas,
@@ -292,6 +294,8 @@ import * as SessionStore from "./auth/SessionStore.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 import { isNetworkPath } from "@t3tools/shared/path";
+import { withPlacementProvider } from "@t3tools/shared/placement";
+import { PlacementBookRef } from "./placement/PlacementBook.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
 import {
   SOCKET_FRAME_PARTS_QUERY_PARAM,
@@ -352,7 +356,12 @@ const resolveEditorConfig = Effect.fn("ws.resolveEditorConfig")(function* <E, R>
 
 export const withLateConfigDiscovery = <E, R>(
   config: ClientServerConfig,
-  liveUpdates: Stream.Stream<ServerConfigStreamEvent, E, R>,
+  liveUpdates: Stream.Stream<
+    | ServerConfigStreamEvent
+    | { readonly type: "prismConnectionChanged"; readonly status: PrismConnectionStatus | null },
+    E,
+    R
+  >,
   launcher: EditorDiscovery,
   remoteOpenTargets: RemoteOpenTargets.RemoteOpenTargets["Service"],
   directEndpoints: Pick<DirectEndpoints.DirectEndpoints["Service"], "resolve">,
@@ -415,6 +424,12 @@ export const withLateConfigDiscovery = <E, R>(
               return [current, []];
             }
             const next = { ...current, directEndpoints: event.endpoints };
+            return [next, [{ version: 1, type: "snapshot", config: next }]];
+          }
+          case "prismConnectionChanged": {
+            if (event.status === (current.prismConnection ?? null)) return [current, []];
+            const { prismConnection: _previous, ...rest } = current;
+            const next = event.status === null ? rest : { ...rest, prismConnection: event.status };
             return [next, [{ version: 1, type: "snapshot", config: next }]];
           }
           case "keybindingsUpdated":
@@ -1473,6 +1488,7 @@ export const layerWsRpc = (
         | FileSystem.FileSystem
         | ServerConfig.ServerConfig
         | ServerSettings.ServerSettingsService
+        | ProviderRegistry.ProviderRegistry
         | DocumentText.DocumentText
       >();
       const applicationEvents = yield* OrchestrationEventStore.OrchestrationEventStore;
@@ -1481,6 +1497,7 @@ export const layerWsRpc = (
       const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
       const scratchThreadPromotion = yield* ScratchThreadPromotion.ScratchThreadPromotion;
       const eventLoopMonitor = yield* EventLoopMonitor.EventLoopMonitor;
+      const { prismConnection } = yield* PlacementBookRef;
       const threadSearch = yield* ThreadSearch.ThreadSearch;
 
       const providerSessionsV2 = yield* ProviderSessionManager.ProviderSessionManagerV2;
@@ -1874,6 +1891,19 @@ export const layerWsRpc = (
           ),
         );
 
+      // Clients list placement profiles as one more provider, so each picker can start a thread in one.
+      const withClientPlacement = (providers: ReadonlyArray<ServerProvider>) =>
+        serverSettings.getSettings.pipe(
+          Effect.map((settings) =>
+            withPlacementProvider(
+              providers,
+              settings,
+              providers[0]?.checkedAt ?? "1970-01-01T00:00:00.000Z",
+            ),
+          ),
+          Effect.orElseSucceed(() => providers),
+        );
+
       const loadServerConfig = Effect.fn("ws.loadServerConfig")(function* (options: {
         readonly usageLimitsCommand: boolean;
         readonly workspaceSnapshotsOnDemand: boolean;
@@ -1882,7 +1912,7 @@ export const layerWsRpc = (
         readonly catalogDigests?: boolean;
       }) {
         const keybindingsConfig = yield* keybindings.loadConfigState;
-        const currentProviders = yield* providerRegistry.getProviders;
+        const currentProviders = yield* withClientPlacement(yield* providerRegistry.getProviders);
         const commandProviders = options.usageLimitsCommand
           ? withUsageLimitsCommands(currentProviders, yield* usageLimitSources.current)
           : currentProviders;
@@ -1901,6 +1931,7 @@ export const layerWsRpc = (
         const auth = yield* serverAuth.getDescriptor();
         const scratchWorkspaceRoot = yield* managedFolders.scratchRoot;
         const lastEventLoopStall = yield* eventLoopMonitor.latestNoticeableStall;
+        const prismStatus = yield* SubscriptionRef.get(prismConnection);
         const discovery = yield* resolveOpenDiscoveryForConfig({
           editors: externalLauncher.resolveAvailableEditors(),
           fileManagerRevealKind: externalLauncher.resolveFileManagerRevealKind(),
@@ -1921,6 +1952,7 @@ export const layerWsRpc = (
           keybindings: keybindingsConfig.keybindings,
           issues: keybindingsConfig.issues,
           providers,
+          ...(prismStatus === null ? {} : { prismConnection: prismStatus }),
           ...discovery,
           observability: {
             logsDirectoryPath: config.logsDir,
@@ -2329,6 +2361,13 @@ export const layerWsRpc = (
                         message: cause.message,
                         cause,
                       }),
+                    PlacementCapacityError: (cause) =>
+                      new OrchestrationV2ThreadLaunchError({
+                        commandId: input.commandId,
+                        projectId: input.projectId,
+                        message: cause.message,
+                        cause,
+                      }),
                     ThreadLaunchError: (cause) =>
                       new OrchestrationV2ThreadLaunchError({
                         commandId: input.commandId,
@@ -2669,6 +2708,7 @@ export const layerWsRpc = (
                 providers = yield* providerRegistry.refreshInstance(instance.instanceId);
               }
             }
+            providers = yield* withClientPlacement(providers);
             const { instanceId, cwd } = input;
             if (input.omitProviders === true && (instanceId === undefined || cwd === undefined)) {
               return { providers: [] };
@@ -3584,6 +3624,7 @@ export const layerWsRpc = (
               // Buffer changes through discovery and the initial snapshot's send.
               const keybindingsChanges = yield* keybindings.subscribeChanges;
               const settingsChanges = yield* serverSettings.subscribeChanges;
+              const placementChanges = yield* serverSettings.subscribeChanges;
               const remoteTargets = yield* Effect.forkScoped(remoteOpenTargets.resolveTargets(), {
                 startImmediately: true,
               });
@@ -3614,7 +3655,16 @@ export const layerWsRpc = (
                 // Seed the changes-only stream so early source refreshes pair with current providers.
                 Stream.concat(
                   Stream.fromEffect(providerRegistry.getProviders),
-                  providerRegistry.streamChanges,
+                  Stream.merge(
+                    providerRegistry.streamChanges,
+                    placementChanges.pipe(
+                      Stream.map((settings) => settings.placementProfiles),
+                      Stream.changesWith(
+                        (previous, next) => JSON.stringify(previous) === JSON.stringify(next),
+                      ),
+                      Stream.mapEffect(() => providerRegistry.getProviders),
+                    ),
+                  ),
                 ),
                 usageLimitSources.streamChanges.pipe(
                   Stream.changesWith(
@@ -3624,6 +3674,7 @@ export const layerWsRpc = (
                 (providers, sources) =>
                   usageLimitsCommand ? withUsageLimitsCommands(providers, sources) : providers,
               ).pipe(
+                Stream.mapEffect(withClientPlacement),
                 // Stripped before the de-dupe below, so snapshot-only changes send nothing.
                 Stream.mapEffect((commandProviders) =>
                   workspaceSnapshotsOnDemand
@@ -3701,7 +3752,12 @@ export const layerWsRpc = (
                   : config;
               const updates = withLateConfigDiscovery(
                 initialConfig,
-                liveUpdates,
+                Stream.merge(
+                  liveUpdates,
+                  SubscriptionRef.changes(prismConnection).pipe(
+                    Stream.map((status) => ({ type: "prismConnectionChanged" as const, status })),
+                  ),
+                ),
                 externalLauncher,
                 {
                   resolveTargets: () => Fiber.join(remoteTargets),

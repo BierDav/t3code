@@ -29,6 +29,7 @@ import { Button } from "../ui/button";
 import { ServerUpdateAction, serverUpdateStageLabel } from "../ServerUpdateAction";
 import { useAutoBalanceUpdateBanner } from "./useAutoBalanceUpdateBanner";
 import { ComposerServerUpdateIcon } from "./ComposerServerUpdateStatus";
+import { prismConnectionBannerItem } from "./ComposerUsageLimits";
 import {
   dismissServerUpdateFailure,
   isServerUpdateFailureDismissed,
@@ -56,7 +57,7 @@ interface SystemComposerBannersInput {
 
 /**
  * The composer banners about the machine itself: offline or reconnecting,
- * a server update, and auto-balanced machines that need one.
+ * its link to Prism, a server update, and auto-balanced machines that need one.
  */
 export function useSystemComposerBanners(input: SystemComposerBannersInput) {
   const {
@@ -162,6 +163,10 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
   const serverUpdateFailureDismissed =
     serverUpdateState === dismissedServerUpdateState ||
     isServerUpdateFailureDismissed(serverUpdateState);
+  // The Prism notice belongs to the machine this composer sends to, not to every host.
+  const prismEnvironmentId = serverConfig?.environment.environmentId ?? null;
+  const [dismissedPrismHttpEnvironmentId, setDismissedPrismHttpEnvironmentId] =
+    useState<EnvironmentId | null>(null);
   return (() => {
     const items: ComposerBannerStackItem[] = [];
     const updateRunning = serverUpdateState.status === "running";
@@ -292,6 +297,23 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
           : {}),
       });
     }
+    const prismConnection = serverConfig?.prismConnection;
+    const prismBanner =
+      prismConnection === "http" &&
+      prismEnvironmentId !== null &&
+      dismissedPrismHttpEnvironmentId === prismEnvironmentId
+        ? null
+        : prismConnectionBannerItem(
+            {
+              status: prismConnection,
+              environmentLabel: hasMultipleRegisteredEnvironments
+                ? (activeEnvironment?.label ?? serverConfig?.environment.label ?? null)
+                : null,
+              onDismiss: () => setDismissedPrismHttpEnvironmentId(prismEnvironmentId),
+            },
+            messages,
+          );
+    if (prismBanner) items.push(prismBanner);
     if (autoBalanceUpdateBanner) items.push(autoBalanceUpdateBanner);
     return items;
   })() as ComposerBannerStackItem[];

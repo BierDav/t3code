@@ -57,6 +57,12 @@ import { parseGitCloneProgressLine } from "../project/gitCloneProgress.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
+import {
+  noPlacementCapacity,
+  type PlacementCapacityError,
+  placementTagCommands,
+  resolvePlacementPick,
+} from "../placement/placementPick.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
@@ -244,7 +250,9 @@ export class ThreadLaunchService extends Context.Service<
       input: ThreadLaunchInput,
     ) => Effect.Effect<
       ThreadLaunchResult,
-      ThreadLaunchError | ThreadManagement.ThreadManagementProviderInstanceDisabledError
+      | ThreadLaunchError
+      | PlacementCapacityError
+      | ThreadManagement.ThreadManagementProviderInstanceDisabledError
     >;
     /** Check a new worktree's base ref and branch name before creation for early errors; launch otherwise accepts and reports these failures inside the thread. */
     readonly checkWorktreeBase: (
@@ -1839,8 +1847,39 @@ const make = Effect.gen(function* () {
     );
   });
 
+  // A launch on the placement provider starts on its profile's account and joins the profile.
+  const launchPlaced: ThreadLaunchService["Service"]["launch"] = Effect.fn(
+    "ThreadLaunchService.launchPlaced",
+  )(function* (request) {
+    const picked = yield* resolvePlacementPick({
+      selection: request.modelSelection,
+      projectId: request.projectId,
+    }).pipe(
+      Effect.provideService(ProviderRegistry.ProviderRegistry, providerRegistry),
+      Effect.provideService(ServerSettings.ServerSettingsService, serverSettings),
+    );
+    if (picked === null) return yield* launch(request);
+    if (picked.selection === null) return yield* noPlacementCapacity(picked.profileId);
+    const result = yield* launch({ ...request, modelSelection: picked.selection });
+    yield* Effect.forEach(
+      placementTagCommands({
+        threadId: result.threadId,
+        tags: result.projection.thread.tags ?? [],
+        profileId: picked.profileId,
+        commandId: request.commandId,
+      }),
+      (command) => threads.dispatch(command),
+      { discard: true },
+    ).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("placement.launch-tag-failed", { threadId: result.threadId, cause }),
+      ),
+    );
+    return result;
+  });
+
   return ThreadLaunchService.of({
-    launch,
+    launch: launchPlaced,
     checkWorktreeBase,
     isNonGitProject,
     retryPreparation,

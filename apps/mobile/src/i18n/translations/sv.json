@@ -5726,5 +5726,12 @@
   "f6cf1627f4acc5ef": "Kommentarens synlighet",
   "eb1fd384ad5919dd": "Intern anteckning",
   "b45f0b467e9406d0": "Svara kunden",
-  "15e5597f8f93ce12": "{start} till {end}"
+  "15e5597f8f93ce12": "{start} till {end}",
+  "dbe712c0cc825386": "Prism går inte att nå",
+  "98aace61f8936fe9": "{environment} når inte Prism",
+  "a87695d39c9d0070": "T3 Code använder sparade profiler och lokala användningsdata.",
+  "fad87ebab2c81248": "Synkroniserar med Prism via HTTP",
+  "94e808c2d52a69d8": "{environment} synkroniserar med Prism via HTTP",
+  "78ee73d7b1b08a27": "Profiler och användning synkroniseras fortfarande medan liveanslutningen är nere.",
+  "acb0283f2ec3a438": "Stäng Prism-meddelande"
 }

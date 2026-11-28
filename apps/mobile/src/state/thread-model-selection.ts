@@ -42,9 +42,12 @@ export function selectThreadModel(
   if (draftKey !== threadKey) return;
   const thread = appAtomRegistry.get(environmentThreadShells.threadShellAtom(ref));
   // Another instance replaces the live session, which may hold an open question; that pick
-  // still waits for a sent message.
+  // still waits for a sent message. A placement profile pick is no instance: the server runs
+  // the thread on the profile's account, so it applies now.
   if (
-    thread?.modelSelection.instanceId !== modelSelection.instanceId ||
+    !thread ||
+    (thread.modelSelection.instanceId !== modelSelection.instanceId &&
+      modelSelection.instanceId !== "placement") ||
     !readEnvironmentScope(ref.environmentId, AuthOrchestrationOperateScope)
   ) {
     return;
