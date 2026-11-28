@@ -21,10 +21,9 @@ and keeps one pull request into `placement-profiles` up to date.
   conflicting files with the patches they belong to. Resolve them on
   `fork-kit/sync` (`npx github:BierDav/fork-kit#v0.4.0 resolve`, or GitHub's
   conflict editor) and merge the PR yourself.
-- **Holding a PR:** add the label `fork-kit:hold` to any PR into `placement-profiles`.
-  The required check `fork-kit/hold` then fails and auto-merge goes off, so the
-  PR cannot merge until the label is removed; the next fork-kit run turns
-  auto-merge back on for a sync PR. It holds that PR only, not releases.
+- **Holding a PR:** turn off its auto-merge. The next fork-kit run turns it
+  back on for a sync PR, so to keep holding one, close it until you are ready.
+  This fork does not run fork-kit's `fork-kit/hold` guard.
 
 Upstream changes `.github/` in most nightlies, so this fork sets
 `workflow_changes = "push"`: those changes are pushed without a human review.
@@ -44,7 +43,14 @@ into it. If a build fails, dispatch it again from Actions. The fleet's
 - **The GitHub App** (fork-kit-bierdav) mints a token scoped to this fork.
   The `fork-kit` environment exposes its credentials only on `prism-nightly`.
   The guard on `placement-profiles` runs on `GITHUB_TOKEN`.
-- **A ruleset on `placement-profiles`:** a pull request and the checks
-  `Typecheck and test` and `fork-kit/hold`; no force pushes or deletion.
-  Repository admins may bypass it. Add `fork-kit/hold` once the guard runs.
+- **A ruleset on `placement-profiles`:** a pull request and the check
+  `Typecheck and test`; no force pushes or deletion. Repository admins may
+  bypass it.
+- **Workflows that need Blacksmith runners are disabled** in Actions:
+  upstream's CI, the desktop, web, relay and mobile previews, Mobile
+  Fingerprint Check, Mobile EAS Production, Mobile Showcase Screenshots and
+  Windows Tests. This fork has no Blacksmith runners, so their runs would
+  queue forever. Upstream jobs guarded by `github.repository == 'pingdotgg/t3code'`
+  skip on their own and stay enabled. Disabling, not editing the workflow
+  files, survives fork-kit syncs, which push upstream's `.github/` changes.
 - **Auto-merge** is allowed in the repository settings.
